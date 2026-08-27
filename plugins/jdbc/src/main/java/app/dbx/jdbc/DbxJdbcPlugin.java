@@ -46,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -917,6 +918,48 @@ public final class DbxJdbcPlugin {
         return executeQueryOnConnection(connection, conn, sql, database, schema, maxRows, fetchSize, rowOffset, timeoutSecs);
     }
 
+    private static boolean shouldRetryWithAdhocHint(SQLException error) {
+        String msg = error == null ? null : error.getMessage();
+        if (msg == null) {
+            return false;
+        }
+        String lower = msg.toLowerCase(Locale.ROOT);
+        return lower.contains("adhoc") || msg.contains("10750") || lower.contains("stream query");
+    }
+
+    private static String injectAdhocHint(String sql) {
+        if (sql == null) {
+            return null;
+        }
+        String trimmed = sql.trim();
+        if (trimmed.isEmpty() || trimmed.toLowerCase(Locale.ROOT).contains("adhoc")) {
+            return trimmed;
+        }
+        if (trimmed.regionMatches(true, 0, "SELECT", 0, 6)) {
+            return trimmed.replaceFirst("(?i)^SELECT\\s+", "SELECT /*+ adhoc */ ");
+        }
+        if (trimmed.regionMatches(true, 0, "WITH", 0, 4)) {
+            return trimmed.replaceFirst("(?i)\\bSELECT\\b\\s+", "SELECT /*+ adhoc */ ");
+        }
+        return "/*+ adhoc */ " + trimmed;
+    }
+
+    private static ExecutedStatement executeStatementForResultWithAdhocRetry(
+        JsonNode connection,
+        Statement statement,
+        String sql,
+        JdbcDriverQuirks quirks
+    ) throws SQLException {
+        try {
+            return executeStatementForResult(statement, sql, quirks);
+        } catch (SQLException error) {
+            if (isHive2RoutinesConnection(connection) && shouldRetryWithAdhocHint(error)) {
+                return executeStatementForResult(statement, injectAdhocHint(sql), quirks);
+            }
+            throw error;
+        }
+    }
+
     private static JsonNode executeQueryOnConnection(
         JsonNode connection,
         Connection conn,
@@ -937,7 +980,7 @@ public final class DbxJdbcPlugin {
             applyStatementOptions(statement, maxRows, fetchSize, timeoutSecs, quirks);
             String trimmedSql = trimStatementSql(sql);
             String effectiveSql = rewritePhoenixSystemCatalogQuery(connection, conn, trimmedSql);
-            ExecutedStatement executed = executeStatementForResult(statement, effectiveSql, quirks);
+            ExecutedStatement executed = executeStatementForResultWithAdhocRetry(connection, statement, effectiveSql, quirks);
             ObjectNode result = MAPPER.createObjectNode();
             ArrayNode columns = MAPPER.createArrayNode();
             ArrayNode rows = MAPPER.createArrayNode();
@@ -1114,7 +1157,7 @@ public final class DbxJdbcPlugin {
             applyStatementOptions(statement, maxRows, fetchSize, timeoutSecs, quirks);
             String trimmedSql = trimStatementSql(sql);
             String effectiveSql = rewritePhoenixSystemCatalogQuery(connection, conn, trimmedSql);
-            ExecutedStatement executed = executeStatementForResult(statement, effectiveSql, quirks);
+            ExecutedStatement executed = executeStatementForResultWithAdhocRetry(connection, statement, effectiveSql, quirks);
             ResultSet rs = executed.resultSet();
             if (rs == null) {
                 ObjectNode result = MAPPER.createObjectNode();
@@ -2116,6 +2159,18 @@ public final class DbxJdbcPlugin {
         String schemaPattern = resolveSchemaPattern(meta, database, schema, quirks);
         Set<String> allowedObjectTypes = normalizedObjectTypes(objectTypes);
 
+        boolean loadedRoutinesFromSystemTables = false;
+        if (isHive2RoutinesConnection(connection)) {
+            loadedRoutinesFromSystemTables = appendInceptorRoutinesFromSystemTables(
+                conn,
+                database,
+                schema,
+                filter,
+                result,
+                objectTypes
+            );
+        }
+
         if (!kingbase) {
             String[] tableTypes = constrainedJdbcTableTypes(jdbcTableTypes(meta), objectTypes);
             if (tableTypes.length > 0) {
@@ -2126,7 +2181,7 @@ public final class DbxJdbcPlugin {
             }
         }
 
-        if (allowedObjectTypes.isEmpty() || allowedObjectTypes.contains("PROCEDURE")) {
+        if (!loadedRoutinesFromSystemTables && (allowedObjectTypes.isEmpty() || allowedObjectTypes.contains("PROCEDURE"))) {
             try (ResultSet rs = meta.getProcedures(catalog, schemaPattern, "%")) {
                 while (rs != null && rs.next()) {
                     ObjectNode item = MAPPER.createObjectNode();
@@ -2136,7 +2191,7 @@ public final class DbxJdbcPlugin {
                     putNullable(item, "comment", rs.getString("REMARKS"));
                     result.add(item);
                 }
-            } catch (SQLException ignored) {
+            } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
             }
         }
 
@@ -2146,7 +2201,7 @@ public final class DbxJdbcPlugin {
                 procedureNames.add(node.path("name").asText());
             }
         }
-        if (allowedObjectTypes.isEmpty() || allowedObjectTypes.contains("FUNCTION")) {
+        if (!loadedRoutinesFromSystemTables && (allowedObjectTypes.isEmpty() || allowedObjectTypes.contains("FUNCTION"))) {
             try (ResultSet rs = meta.getFunctions(catalog, schemaPattern, "%")) {
                 while (rs != null && rs.next()) {
                     String name = rs.getString("FUNCTION_NAME");
@@ -2159,7 +2214,7 @@ public final class DbxJdbcPlugin {
                         result.add(item);
                     }
                 }
-            } catch (SQLException ignored) {
+            } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
             }
         }
 
@@ -2168,6 +2223,118 @@ public final class DbxJdbcPlugin {
         }
 
         return filterMetadataNodes(result, filter, limit, offset, objectTypes, "object_type", false);
+    }
+
+    private static boolean isHive2RoutinesConnection(JsonNode connection) {
+        String url = optionalText(connection, "connection_string");
+        if (url != null && urlMatchesPrefix(url, "jdbc:hive2:")) {
+            return true;
+        }
+        String driverClass = optionalText(connection, "jdbc_driver_class");
+        if (driverClass == null) {
+            return false;
+        }
+        String normalized = driverClass.toLowerCase(Locale.ROOT);
+        return normalized.contains("inceptor") || normalized.contains("transwarp") || normalized.contains("hive");
+    }
+
+    private static boolean appendInceptorRoutinesFromSystemTables(
+        Connection conn,
+        String database,
+        String schema,
+        String filter,
+        ArrayNode result,
+        List<String> objectTypes
+    ) {
+        Set<String> allowedTypes = normalizedObjectTypes(objectTypes);
+        boolean wantAll = allowedTypes.isEmpty();
+        boolean wantProcedures = wantAll || allowedTypes.contains("PROCEDURE");
+        boolean wantFunctions = wantAll || allowedTypes.contains("FUNCTION");
+        if (!wantProcedures && !wantFunctions) {
+            return false;
+        }
+
+        String trimmedFilter = filter == null ? "" : filter.trim();
+        String likePattern = trimmedFilter.isEmpty() ? "%" : "%" + trimmedFilter + "%";
+
+        LinkedHashSet<String> candidates = new LinkedHashSet<>();
+        String db = emptyToNull(database);
+        if (db != null) {
+            candidates.add(db);
+        }
+        String sc = emptyToNull(schema);
+        if (sc != null) {
+            candidates.add(sc);
+        }
+        if (candidates.isEmpty()) {
+            return false;
+        }
+
+        int added = 0;
+        try {
+            for (String candidateDb : candidates) {
+                if (wantProcedures) {
+                    String sql =
+                        "SELECT procedure_name FROM system.procedures_v " +
+                            "WHERE lower(database_name) = lower(?) AND procedure_name LIKE ? " +
+                            "ORDER BY procedure_name";
+                    try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                        ps.setString(1, candidateDb);
+                        ps.setString(2, likePattern);
+                        try (ResultSet rs = ps.executeQuery()) {
+                            while (rs.next()) {
+                                ObjectNode item = MAPPER.createObjectNode();
+                                item.put("name", rs.getString(1));
+                                item.put("object_type", "PROCEDURE");
+                                putNullable(item, "schema", schema);
+                                item.putNull("comment");
+                                result.add(item);
+                                added++;
+                            }
+                        }
+                    }
+                }
+
+                if (wantFunctions) {
+                    String sql =
+                        "SELECT function_name FROM system.functions_v " +
+                            "WHERE lower(database_name) = lower(?) AND function_name LIKE ? " +
+                            "ORDER BY function_name";
+                    try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                        ps.setString(1, candidateDb);
+                        ps.setString(2, likePattern);
+                        try (ResultSet rs = ps.executeQuery()) {
+                            while (rs.next()) {
+                                ObjectNode item = MAPPER.createObjectNode();
+                                item.put("name", rs.getString(1));
+                                item.put("object_type", "FUNCTION");
+                                putNullable(item, "schema", schema);
+                                item.putNull("comment");
+                                result.add(item);
+                                added++;
+                            }
+                        }
+                    }
+                }
+
+                if (added > 0) {
+                    break;
+                }
+            }
+        } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
+            return false;
+        }
+
+        return added > 0;
+    }
+
+    private static String stripRoutineSignature(String name) {
+        if (name == null) {
+            return null;
+        }
+        String trimmed = name.trim();
+        int paren = trimmed.indexOf('(');
+        return paren > 0 ? trimmed.substring(0, paren).trim() : trimmed;
     }
 
     private static boolean isMysqlFamilyConnection(JsonNode connection) {
@@ -3731,6 +3898,55 @@ public final class DbxJdbcPlugin {
                     return item;
                 }
             }
+        }
+
+        if (isHive2RoutinesConnection(connection)) {
+            String routineName = stripRoutineSignature(name);
+            String normalizedType = normalizeObjectType(objectType);
+
+            LinkedHashSet<String> candidates = new LinkedHashSet<>();
+            String db = emptyToNull(database);
+            if (db != null) {
+                candidates.add(db);
+            }
+            String sc = emptyToNull(schema);
+            if (sc != null) {
+                candidates.add(sc);
+            }
+            if (candidates.isEmpty()) {
+                throw new SQLException("Object source requires database context for Hive/Inceptor routines");
+            }
+
+            for (String candidateDb : candidates) {
+                String sql;
+                if ("PROCEDURE".equals(normalizedType)) {
+                    sql = "SELECT full_text FROM system.procedures_v " +
+                        "WHERE lower(database_name) = lower(?) AND procedure_name = ?";
+                } else if ("FUNCTION".equals(normalizedType)) {
+                    sql = "SELECT full_text FROM system.functions_v " +
+                        "WHERE lower(database_name) = lower(?) AND function_name = ?";
+                } else {
+                    throw new SQLException("Unsupported object_type for Hive/Inceptor routine source: " + objectType);
+                }
+
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    ps.setString(1, candidateDb);
+                    ps.setString(2, routineName);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) {
+                            continue;
+                        }
+                        ObjectNode item = MAPPER.createObjectNode();
+                        item.put("name", name);
+                        item.put("object_type", objectType);
+                        putNullable(item, "schema", emptyToNull(schema) != null ? schema : candidateDb);
+                        putNullable(item, "source", rs.getString(1));
+                        return item;
+                    }
+                }
+            }
+
+            throw new SQLException("Object source not found");
         }
 
         throw new SQLException("Object source is not supported by this JDBC driver");
