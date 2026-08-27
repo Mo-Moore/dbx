@@ -303,6 +303,11 @@ public final class DbxJdbcPlugin {
     private static final Pattern ORACLE_UNSUPPORTED_CHARSET_PATTERN =
         Pattern.compile("(?i)unsupported charset|不支持的字符集");
 
+    // Inceptor/Hive adhoc engine error code. Matched with word boundaries so that
+    // incidental substrings (ports, durations like 107500 or 10750ms) do not trigger
+    // the adhoc hint retry.
+    private static final Pattern HIVE_ADHOC_ERROR_CODE_PATTERN = Pattern.compile("\\b10750\\b");
+
     // The base Oracle thin driver jar ships converters for a handful of charsets only;
     // databases such as ZHS16GBK need orai18n.jar, otherwise every metadata call that
     // reads dictionary comments fails wholesale.
@@ -924,7 +929,18 @@ public final class DbxJdbcPlugin {
             return false;
         }
         String lower = msg.toLowerCase(Locale.ROOT);
-        return lower.contains("adhoc") || msg.contains("10750") || lower.contains("stream query");
+        return lower.contains("adhoc") || HIVE_ADHOC_ERROR_CODE_PATTERN.matcher(msg).find() || lower.contains("stream query");
+    }
+
+    private static boolean isPlainSelectStatement(String sql) {
+        if (sql == null || sql.isBlank()) {
+            return false;
+        }
+        // Only plain SELECT statements are retried with the hint. WITH ... SELECT is
+        // excluded because the hint would be injected before the first SELECT inside
+        // the CTE body instead of the outer query; DML and other statements are not
+        // silently rewritten and re-executed.
+        return "SELECT".equals(firstSqlKeyword(sql));
     }
 
     private static String injectAdhocHint(String sql) {
@@ -935,13 +951,12 @@ public final class DbxJdbcPlugin {
         if (trimmed.isEmpty() || trimmed.toLowerCase(Locale.ROOT).contains("adhoc")) {
             return trimmed;
         }
-        if (trimmed.regionMatches(true, 0, "SELECT", 0, 6)) {
-            return trimmed.replaceFirst("(?i)^SELECT\\s+", "SELECT /*+ adhoc */ ");
+        String body = stripLeadingSqlComments(trimmed);
+        if (!body.regionMatches(true, 0, "SELECT", 0, 6)) {
+            return trimmed;
         }
-        if (trimmed.regionMatches(true, 0, "WITH", 0, 4)) {
-            return trimmed.replaceFirst("(?i)\\bSELECT\\b\\s+", "SELECT /*+ adhoc */ ");
-        }
-        return "/*+ adhoc */ " + trimmed;
+        int bodyStart = trimmed.length() - body.length();
+        return trimmed.substring(0, bodyStart) + body.replaceFirst("(?i)^SELECT\\s+", "SELECT /*+ adhoc */ ");
     }
 
     private static ExecutedStatement executeStatementForResultWithAdhocRetry(
@@ -953,7 +968,9 @@ public final class DbxJdbcPlugin {
         try {
             return executeStatementForResult(statement, sql, quirks);
         } catch (SQLException error) {
-            if (isHive2RoutinesConnection(connection) && shouldRetryWithAdhocHint(error)) {
+            if (isHive2RoutinesConnection(connection)
+                && isPlainSelectStatement(sql)
+                && shouldRetryWithAdhocHint(error)) {
                 return executeStatementForResult(statement, injectAdhocHint(sql), quirks);
             }
             throw error;
@@ -2276,7 +2293,7 @@ public final class DbxJdbcPlugin {
                 if (wantProcedures) {
                     String sql =
                         "SELECT procedure_name FROM system.procedures_v " +
-                            "WHERE lower(database_name) = lower(?) AND procedure_name LIKE ? " +
+                            "WHERE lower(database_name) = lower(?) AND lower(procedure_name) LIKE lower(?) " +
                             "ORDER BY procedure_name";
                     try (PreparedStatement ps = conn.prepareStatement(sql)) {
                         ps.setString(1, candidateDb);
@@ -2298,7 +2315,7 @@ public final class DbxJdbcPlugin {
                 if (wantFunctions) {
                     String sql =
                         "SELECT function_name FROM system.functions_v " +
-                            "WHERE lower(database_name) = lower(?) AND function_name LIKE ? " +
+                            "WHERE lower(database_name) = lower(?) AND lower(function_name) LIKE lower(?) " +
                             "ORDER BY function_name";
                     try (PreparedStatement ps = conn.prepareStatement(sql)) {
                         ps.setString(1, candidateDb);
