@@ -33,6 +33,7 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.SQLClientInfoException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.sql.Statement;
 import java.sql.Time;
@@ -590,7 +591,9 @@ public final class DbxJdbcPlugin {
 
         String driverClass = optionalText(connection, "jdbc_driver_class");
         if (driverClass != null) {
-            Driver driver = (Driver) Class.forName(driverClass, true, loader).getDeclaredConstructor().newInstance();
+            Constructor<?> constructor = Class.forName(driverClass, true, loader).getDeclaredConstructor();
+            constructor.setAccessible(true);
+            Driver driver = (Driver) constructor.newInstance();
             registeredDriver = new DriverShim(driver);
             DriverManager.registerDriver(registeredDriver);
             registeredDriverKey = driverKey;
@@ -1912,16 +1915,23 @@ public final class DbxJdbcPlugin {
             return result;
         }
         DatabaseMetaData metadata = conn.getMetaData();
+        SQLException catalogFailure = null;
         try (ResultSet rs = metadata.getCatalogs()) {
             while (rs.next()) {
                 String name = rs.getString("TABLE_CAT");
                 addDatabase(result, name);
             }
-        } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
+        } catch (AbstractMethodError | UnsupportedOperationException ignored) {
             // Hive/Inceptor often throw UnsupportedOperationException for optional metadata methods.
+        } catch (SQLException e) {
+            catalogFailure = e;
         }
         if (result.isEmpty() && quirks.useCatalogFallbackSql()) {
             addDatabasesFromShowDatabases(conn, result);
+        }
+        if (catalogFailure != null && result.isEmpty()) {
+            // Only tolerate getCatalogs failures when the SHOW DATABASES fallback recovered them.
+            throw catalogFailure;
         }
         if (result.isEmpty() && quirks.schemasAsDatabasesFallback()) {
             addSchemaDatabases(result, metadata);
@@ -1944,10 +1954,15 @@ public final class DbxJdbcPlugin {
     }
 
     private static void addDatabasesFromShowDatabases(Connection conn, ArrayNode result) {
-        try (Statement statement = conn.createStatement();
-             ResultSet rs = statement.executeQuery("SHOW DATABASES")) {
-            while (rs.next()) {
-                addDatabase(result, rs.getString(1));
+        try (Statement statement = conn.createStatement()) {
+            if (statement == null) {
+                // Proxied or broken drivers may return null; let the schemas fallback take over.
+                return;
+            }
+            try (ResultSet rs = statement.executeQuery("SHOW DATABASES")) {
+                while (rs.next()) {
+                    addDatabase(result, rs.getString(1));
+                }
             }
         } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
         }
