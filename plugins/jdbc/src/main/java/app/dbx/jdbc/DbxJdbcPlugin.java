@@ -2322,7 +2322,7 @@ public final class DbxJdbcPlugin {
                 }
             }
         } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
-            return false;
+            return added > 0;
         }
 
         return added > 0;
