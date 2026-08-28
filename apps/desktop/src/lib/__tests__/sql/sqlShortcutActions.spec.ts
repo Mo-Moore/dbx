@@ -22,6 +22,12 @@ describe("resolveSqlShortcutTemplate", () => {
   it("replaces all occurrences", () => {
     expect(resolveSqlShortcutTemplate("SELECT * FROM ${table} JOIN ${table}", "public.users")).toBe("SELECT * FROM public.users JOIN public.users");
   });
+
+  it("does not expand replacement patterns in the selection", () => {
+    expect(resolveSqlShortcutTemplate("SELECT * FROM ${table}", "a$&b")).toBe("SELECT * FROM a$&b");
+    expect(resolveSqlShortcutTemplate("SELECT * FROM ${table}", "x$'y")).toBe("SELECT * FROM x$'y");
+    expect(resolveSqlShortcutTemplate("${table} ${table}", "$`1")).toBe("$`1 $`1");
+  });
 });
 
 describe("enabledSqlShortcutActions", () => {

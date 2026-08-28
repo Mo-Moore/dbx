@@ -859,6 +859,13 @@ function saveSqlShortcut() {
 function setSqlShortcutEnabled(id: string, enabled: boolean) {
   const idx = editSqlShortcuts.value.findIndex((item) => item.id === id);
   if (idx === -1) return;
+  if (enabled) {
+    const next = editSqlShortcuts.value.map((item) => (item.id === id ? { ...item, enabled } : item));
+    if (sqlShortcutsHaveConflicts(next, editShortcuts.value)) {
+      toast(t("settings.shortcutConflict"), 3000);
+      return;
+    }
+  }
   editSqlShortcuts.value[idx] = { ...editSqlShortcuts.value[idx], enabled };
   void commitSqlShortcuts();
 }

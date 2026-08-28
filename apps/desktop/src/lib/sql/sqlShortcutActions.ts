@@ -5,7 +5,7 @@ import type { SqlShortcutAction } from "@/types/database";
 export const SQL_SHORTCUT_TABLE_TOKEN = "${table}";
 
 export function resolveSqlShortcutTemplate(template: string, selectedTable: string): string {
-  return template.replace(/\$\{table\}/g, selectedTable.trim());
+  return template.replace(/\$\{table\}/g, () => selectedTable.trim());
 }
 
 export function enabledSqlShortcutActions(actions: readonly SqlShortcutAction[]): SqlShortcutAction[] {
