@@ -123,6 +123,18 @@ test("multi-select view ddl opens a combined ddl tab instead of export structure
   assert.match(runtimeHost, /openDdlForSelection/);
 });
 
+test("multi-select add-to-ai only mentions tables in the active execution context", () => {
+  const runtimeHost = readFileSync("apps/desktop/src/components/sidebar/SidebarTreeRuntimeHost.vue", "utf8");
+  // The function's return type annotation contains braces, so extract the body
+  // from the signature line to the next column-0 closing brace.
+  const selectedAiTableTargetsBody = /function selectedAiTableTargets\([^)]*\)[^\n]*\{[\s\S]*?\n\}/.exec(runtimeHost)?.[0] ?? "";
+
+  assert.notEqual(selectedAiTableTargetsBody, "");
+  assert.match(selectedAiTableTargetsBody, /resolveSidebarDdlTargets\(/);
+  assert.match(selectedAiTableTargetsBody, /target\.type === "table"/);
+  assert.doesNotMatch(selectedAiTableTargetsBody, /sidebarStructureExportTargets\(/);
+});
+
 test("successful tree table paste consumes only the clipboard used to start it", () => {
   const runtimeHost = readFileSync("apps/desktop/src/components/sidebar/SidebarTreeRuntimeHost.vue", "utf8");
   const confirmPasteTableBody = functionBody(runtimeHost, "confirmPasteTable");

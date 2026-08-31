@@ -42,10 +42,31 @@ interface SidebarTableExportTarget {
   identifierQuote?: string;
   batchSize: number;
   rowLimit: number | null;
+  fileNameBase?: string;
 }
 
 function tableExportTargetCacheKey(target: Pick<SidebarTableExportTarget, "nodeId">): string {
   return target.nodeId;
+}
+
+/**
+ * Batch exports share one output directory, so same-name tables from different
+ * schemas would silently overwrite each other. Qualify colliding names with
+ * their schema and fall back to numeric suffixes for remaining collisions.
+ */
+function applyTableExportFileBaseNames(targets: readonly SidebarTableExportTarget[]): void {
+  const tableNameCounts = new Map<string, number>();
+  for (const target of targets) tableNameCounts.set(target.tableName, (tableNameCounts.get(target.tableName) ?? 0) + 1);
+
+  const usedNames = new Set<string>();
+  for (const target of targets) {
+    const base = (tableNameCounts.get(target.tableName) ?? 0) > 1 && target.schema ? `${target.schema}.${target.tableName}` : target.tableName;
+    let name = base;
+    let suffix = 2;
+    while (usedNames.has(name)) name = `${base}-${suffix++}`;
+    usedNames.add(name);
+    target.fileNameBase = name;
+  }
 }
 
 interface ExportTableDataOptions {
@@ -247,7 +268,7 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
   }
 
   async function resolveTableExportOutputPath(target: SidebarTableExportTarget, format: string, outputDirectory?: string): Promise<string | null> {
-    const fileName = `${target.tableName}.${format}`;
+    const fileName = `${target.fileNameBase ?? target.tableName}.${format}`;
     if (outputDirectory !== undefined) {
       return outputDirectory ? joinExportFilePath(outputDirectory, fileName) : fileName;
     }
@@ -343,9 +364,11 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
   }
 
   function currentTableExportTargets(): SidebarTableExportTarget[] {
-    return tableDataExportTargets()
+    const targets = tableDataExportTargets()
       .map((node) => tableExportTargetFromNode(node))
       .filter((target): target is SidebarTableExportTarget => target != null);
+    applyTableExportFileBaseNames(targets);
+    return targets;
   }
 
   async function exportTableData(target: SidebarTableExportTarget, format: "csv" | "xlsx" | "sql", exportOptions: ExportTableDataOptions = {}) {

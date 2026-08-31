@@ -1,4 +1,5 @@
 import type { TreeNode } from "@/types/database";
+import { sidebarDdlTargetsForExecutionContext } from "@/lib/sidebar/sidebarDdlTemplate";
 
 export interface SidebarDatabaseExportSource {
   connectionId: string;
@@ -63,9 +64,9 @@ export function sidebarSameSchemaStructureTargets(activeNode: TreeNode, treeNode
   return sameContext.length > 1 && sameContext.some((target) => target.id === activeNode.id) ? sameContext : [activeNode];
 }
 
-/** Batch data export includes tables only; single-target fallback still allows one view/materialized view. */
+/** Batch data export includes tables only and stays inside the active execution context; single-target fallback still allows one view/materialized view. */
 export function sidebarTableDataExportTargets(activeNode: TreeNode, treeNodes: readonly TreeNode[], selectedNodeIds: readonly string[]): SidebarStructureExportTarget[] {
-  const targets = sidebarStructureExportTargets(activeNode, treeNodes, selectedNodeIds);
+  const targets = canStructureExport(activeNode) ? sidebarDdlTargetsForExecutionContext(activeNode, sidebarStructureExportTargets(activeNode, treeNodes, selectedNodeIds)) : [];
   const tables = targets.filter((node) => node.type === "table");
   if (tables.length > 1 && tables.some((node) => node.id === activeNode.id)) return tables;
   if (activeNode.type === "table" && canStructureExport(activeNode)) return [activeNode];

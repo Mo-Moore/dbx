@@ -180,7 +180,7 @@ import { runBatchTableTruncate } from "@/lib/table/batchTableTruncate";
 import { runBatchTableDrop } from "@/lib/table/batchTableDrop";
 import { buildSidebarDdlTemplateSql } from "@/lib/sidebar/sidebarDdlTemplate";
 import { resolveSidebarDdlTargets } from "@/lib/sidebar/sidebarDdlTargets";
-import { sidebarStructureExportTargets, sidebarTableDataExportTargets } from "@/lib/sidebar/sidebarExportRuntime";
+import { sidebarTableDataExportTargets } from "@/lib/sidebar/sidebarExportRuntime";
 import { formatSidebarTableCopyText, type FormatSidebarTableNamesOptions } from "@/lib/sidebar/sidebarTableNameCopy";
 import { supportsScheduledDatabaseBackup } from "@/lib/backup/scheduledDatabaseBackup";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
@@ -4991,7 +4991,7 @@ function selectedDataExportTargetCount(): number {
 }
 
 function selectedAiTableTargets(): Array<TreeNode & { connectionId: string; database: string }> {
-  return sidebarStructureExportTargets(activeNode.value, connectionStore.treeNodes, acceptedSelectionIds ?? connectionStore.selectedTreeNodeIds).filter((target) => target.type === "table");
+  return resolveSidebarDdlTargets(activeNode.value, connectionStore.treeNodes, acceptedSelectionIds ?? connectionStore.selectedTreeNodeIds).filter((target) => target.type === "table");
 }
 
 function addToAiMenuItem(node: TreeNode): ContextMenuItem {

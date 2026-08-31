@@ -48,4 +48,15 @@ describe("sidebar export runtime", () => {
     expect(sidebarTableDataExportTargets(view, [group], [other.id, table.id, view.id])).toEqual([view]);
     expect(sidebarTableDataExportTargets(table, [group], [view.id])).toEqual([table]);
   });
+
+  it("scopes batch data export targets to the active execution context", () => {
+    const localUsers: TreeNode = { id: "t1", label: "users", type: "table", connectionId: "c1", database: "db", schema: "public" };
+    const localOrders: TreeNode = { id: "t2", label: "orders", type: "table", connectionId: "c1", database: "db", schema: "public" };
+    const otherConnectionOrders: TreeNode = { id: "t3", label: "orders", type: "table", connectionId: "c2", database: "db", schema: "public" };
+    const otherDatabaseUsers: TreeNode = { id: "t4", label: "users", type: "table", connectionId: "c1", database: "other", schema: "public" };
+    const group: TreeNode = { id: "group", label: "Tables", type: "group-tables", children: [localUsers, localOrders, otherConnectionOrders, otherDatabaseUsers] };
+
+    expect(sidebarTableDataExportTargets(localUsers, [group], [localUsers.id, localOrders.id, otherConnectionOrders.id, otherDatabaseUsers.id])).toEqual([localUsers, localOrders]);
+    expect(sidebarTableDataExportTargets(localOrders, [group], [localUsers.id, localOrders.id, otherConnectionOrders.id, otherDatabaseUsers.id])).toEqual([localUsers, localOrders]);
+  });
 });
