@@ -88,7 +88,7 @@ test("table copy menu uses the shared single and multi-selection clipboard path"
   assert.match(copySelectedNamesBody, /const selectedNodes = selectedTreeNodesInVisibleOrder\(\)/);
   assert.match(copySelectedNamesBody, /selectedNodes\.length > 1 && selectedNodes\.some\(\(node\) => node\.id === activeNode\.value\.id\) \? selectedNodes : \[activeNode\.value\]/);
   assert.match(copySelectedNamesBody, /updateTreeClipboardForNodes\(nodes\)/);
-  assert.match(copySelectedNamesBody, /copyToClipboard\(nodes\.map\(copyNameForTreeNode\)\.join\("\\n"\)\)/);
+  assert.match(copySelectedNamesBody, /formatSelectedTableNamesForClipboard/);
 });
 
 test("MySQL object name menus expose leaf and display-path copy choices", () => {
@@ -100,7 +100,7 @@ test("MySQL object name menus expose leaf and display-path copy choices", () => 
   const databaseMenuBody = functionBody(runtimeHost, "buildDatabaseSidebarMenu");
   const objectMenuBody = functionBody(runtimeHost, "buildObjectSidebarMenu");
 
-  assert.match(copyNameBody, /copyNameForTreeNode\(node\)/);
+  assert.match(copyNameBody, /formatSelectedTableNamesForClipboard/);
   assert.match(copyDisplayPathBody, /copyDisplayPathForTreeNode\(node, connectionName\)/);
   assert.match(copyNameMenuItemBody, /currentDatabaseType\(\) === "mysql"/);
   assert.match(copyNameMenuItemBody, /children: \[/);
@@ -112,6 +112,15 @@ test("MySQL object name menus expose leaf and display-path copy choices", () => 
   assert.match(objectMenuBody, /items\.push\(copyNameMenuItem\(\)\)/);
   assert.match(objectMenuBody, /node\.type === "trigger" \? copyNameMenuItem\(\)/);
   assert.match(objectMenuBody, /node\.type === "sequence"[\s\S]*action: copyName/);
+});
+
+test("multi-select view ddl opens a combined ddl tab instead of export structure", () => {
+  const runtimeHost = readFileSync("apps/desktop/src/components/sidebar/SidebarTreeRuntimeHost.vue", "utf8");
+  const openDdlBody = functionBody(runtimeHost, "openDdl");
+
+  assert.doesNotMatch(openDdlBody, /exportStructure\(\)/);
+  assert.match(openDdlBody, /openSidebarMultiTableDdlTab\(targets\)/);
+  assert.match(runtimeHost, /openDdlForSelection/);
 });
 
 test("successful tree table paste consumes only the clipboard used to start it", () => {

@@ -112,7 +112,7 @@ describe("useSidebarTreeExportRuntime", () => {
     const runtime = useSidebarTreeExportRuntime({
       activeNode,
       connectionStore: connectionStore as never,
-      settingsStore: {} as never,
+      settingsStore: exportSettings() as never,
       acceptedSelectionIds: () => null,
     });
 
@@ -156,15 +156,15 @@ describe("useSidebarTreeExportRuntime", () => {
 
     expect(source).toContain('import XlsxHeaderDialog from "@/components/export/XlsxHeaderDialog.vue"');
     expect(exportDataXlsx).toContain("await api.getColumns(");
-    expect(exportDataXlsx).toContain("hasXlsxHeaderComments(columnInfos?.map((column) => column.comment))");
-    expect(exportDataXlsx.indexOf("await showSidebarTreeXlsxHeaderDialog(")).toBeLessThan(exportDataXlsx.indexOf('await exportTableData(target, "xlsx", columnInfos, exportOptions.headerMode, exportOptions.autoFilter)'));
+    expect(exportDataXlsx).toContain("hasXlsxHeaderComments(columnInfos.map((column) => column.comment))");
+    expect(exportDataXlsx.indexOf("await showSidebarTreeXlsxHeaderDialog(")).toBeLessThan(exportDataXlsx.indexOf('await exportTableData(target, "xlsx"'));
   });
 
   it("falls back to field-name headers when column metadata is unavailable", () => {
     const exportDataXlsx = functionBody("exportDataXlsx");
 
-    expect(exportDataXlsx).toContain("catch {\n      // Export still works with field-name headers when column metadata is unavailable.\n    }");
-    expect(exportDataXlsx).toContain('await exportTableData(target, "xlsx", columnInfos, exportOptions.headerMode, exportOptions.autoFilter)');
+    expect(exportDataXlsx).toContain("// Export still works with field-name headers when column metadata is unavailable.");
+    expect(exportDataXlsx).toContain('await exportTableData(target, "xlsx"');
   });
 
   it("sends the selected mode's header overrides to both XLSX export paths", () => {
@@ -245,5 +245,54 @@ describe("useSidebarTreeExportRuntime", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("exports every selected table when multiple tables are selected", async () => {
+    const first = { id: "table-1", type: "table", label: "users", connectionId: "conn-1", database: "db", schema: "public", children: [] } as TreeNode;
+    const second = { id: "table-2", type: "table", label: "orders", connectionId: "conn-1", database: "db", schema: "public", children: [] } as TreeNode;
+    const group = { id: "tables", type: "group-tables", label: "Tables", children: [first, second] } as TreeNode;
+    const activeNode = shallowRef(first);
+    const settingsStore = exportSettings();
+    const connectionStore = {
+      ensureConnected: vi.fn(),
+      getConfig: vi.fn(() => ({ db_type: "postgres" })),
+      connectionIdentifierQuote: vi.fn(() => '"'),
+      treeNodes: [group],
+      selectedTreeNodeIds: [second.id, first.id],
+    };
+    const runtime = useSidebarTreeExportRuntime({
+      activeNode,
+      connectionStore: connectionStore as never,
+      settingsStore: settingsStore as never,
+      acceptedSelectionIds: () => null,
+    });
+
+    await runtime.exportData("csv");
+
+    expect(apiMock.startTableExport).toHaveBeenCalledTimes(2);
+    expect(apiMock.startTableExport).toHaveBeenNthCalledWith(1, expect.objectContaining({ tableName: "users", filePath: "users.csv" }), expect.any(Function));
+    expect(apiMock.startTableExport).toHaveBeenNthCalledWith(2, expect.objectContaining({ tableName: "orders", filePath: "orders.csv" }), expect.any(Function));
+  });
+
+  it("keeps single-table export behavior when only one table is selected", async () => {
+    const activeNode = shallowRef({ id: "table-1", type: "table", label: "users", connectionId: "conn-1", database: "db", schema: "public", children: [] } as TreeNode);
+    const connectionStore = {
+      ensureConnected: vi.fn(),
+      getConfig: vi.fn(() => ({ db_type: "postgres" })),
+      connectionIdentifierQuote: vi.fn(() => '"'),
+      treeNodes: [],
+      selectedTreeNodeIds: [],
+    };
+    const runtime = useSidebarTreeExportRuntime({
+      activeNode,
+      connectionStore: connectionStore as never,
+      settingsStore: exportSettings() as never,
+      acceptedSelectionIds: () => null,
+    });
+
+    await runtime.exportData("csv");
+
+    expect(apiMock.startTableExport).toHaveBeenCalledOnce();
+    expect(apiMock.startTableExport).toHaveBeenCalledWith(expect.objectContaining({ tableName: "users", filePath: "users.csv" }), expect.any(Function));
   });
 });

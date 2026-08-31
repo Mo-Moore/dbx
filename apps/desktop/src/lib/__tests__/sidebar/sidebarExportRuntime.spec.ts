@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TreeNode } from "@/types/database";
-import { allDatabasesExportSourceForNode, databaseExportSourceForNode, sidebarStructureExportTargets } from "@/lib/sidebar/sidebarExportRuntime";
+import { allDatabasesExportSourceForNode, databaseExportSourceForNode, sidebarSameSchemaStructureTargets, sidebarStructureExportTargets, sidebarTableDataExportTargets } from "@/lib/sidebar/sidebarExportRuntime";
 
 describe("sidebar export runtime", () => {
   it("prepares database and table export sources", () => {
@@ -26,5 +26,26 @@ describe("sidebar export runtime", () => {
 
     expect(sidebarStructureExportTargets(first, [group], [third.id, first.id, second.id])).toEqual([first, second, third]);
     expect(sidebarStructureExportTargets(first, [group], [second.id])).toEqual([first]);
+  });
+
+  it("limits multi-select diagram and database export prefills to the active schema context", () => {
+    const publicUsers: TreeNode = { id: "t1", label: "users", type: "table", connectionId: "c1", database: "db", schema: "public" };
+    const publicOrders: TreeNode = { id: "t2", label: "orders", type: "table", connectionId: "c1", database: "db", schema: "public" };
+    const salesUsers: TreeNode = { id: "t3", label: "users", type: "table", connectionId: "c1", database: "db", schema: "sales" };
+    const group: TreeNode = { id: "group", label: "Tables", type: "group-tables", children: [publicUsers, publicOrders, salesUsers] };
+
+    expect(sidebarSameSchemaStructureTargets(publicUsers, [group], [publicOrders.id, publicUsers.id, salesUsers.id])).toEqual([publicUsers, publicOrders]);
+    expect(sidebarSameSchemaStructureTargets(publicUsers, [group], [salesUsers.id, publicUsers.id])).toEqual([publicUsers]);
+  });
+
+  it("counts batch data export targets as tables only", () => {
+    const table: TreeNode = { id: "t1", label: "users", type: "table", connectionId: "c1", database: "db", schema: "public" };
+    const view: TreeNode = { id: "v1", label: "active_users", type: "view", connectionId: "c1", database: "db", schema: "public" };
+    const other: TreeNode = { id: "t2", label: "orders", type: "table", connectionId: "c1", database: "db", schema: "public" };
+    const group: TreeNode = { id: "group", label: "Objects", type: "group-tables", children: [table, view, other] };
+
+    expect(sidebarTableDataExportTargets(table, [group], [other.id, table.id, view.id])).toEqual([table, other]);
+    expect(sidebarTableDataExportTargets(view, [group], [other.id, table.id, view.id])).toEqual([view]);
+    expect(sidebarTableDataExportTargets(table, [group], [view.id])).toEqual([table]);
   });
 });
