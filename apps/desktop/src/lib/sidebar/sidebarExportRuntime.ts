@@ -55,6 +55,7 @@ export function sidebarStructureExportTargets(activeNode: TreeNode, treeNodes: r
 
 /** Keeps multi-select only when every target shares the active node's schema context. */
 export function sidebarSameSchemaStructureTargets(activeNode: TreeNode, treeNodes: readonly TreeNode[], selectedNodeIds: readonly string[]): SidebarStructureExportTarget[] {
+  if (!canStructureExport(activeNode)) return [];
   const targets = sidebarStructureExportTargets(activeNode, treeNodes, selectedNodeIds);
   if (targets.length <= 1) return targets;
   const activeContext = sidebarStructureTargetSchemaContext(activeNode);

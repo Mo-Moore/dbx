@@ -163,7 +163,12 @@ export function createMultiTableReferencePayload(options: {
   } else {
     payload.tableReferences = tableReferences;
   }
-  applyOptionalReferenceMeta(payload, options);
+  applyOptionalReferenceMeta(payload, {
+    databaseType: options.databaseType,
+    driverProfile: options.driverProfile,
+    tableNameSeparator: options.tableNameSeparator,
+    includeTableSchema: options.includeTableSchema,
+  });
   return payload;
 }
 
