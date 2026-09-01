@@ -71,8 +71,9 @@ export function buildInsertValueHintDecorations(hints: readonly InsertValueHint[
 /** True when `pos` sits on an insert-value-hint widget anchor (value expression start). */
 export function isInsertValueHintDecorationAt(decorations: DecorationSet, pos: number): boolean {
   let found = false;
-  decorations.between(Math.max(0, pos - 1), pos + 1, (_from, _to, spec) => {
-    if (spec.widget instanceof InsertValueHintWidget) found = true;
+  decorations.between(Math.max(0, pos - 1), pos + 1, (_from, _to, decoration) => {
+    const widget = decoration.spec?.widget;
+    if (widget instanceof InsertValueHintWidget) found = true;
   });
   return found;
 }
