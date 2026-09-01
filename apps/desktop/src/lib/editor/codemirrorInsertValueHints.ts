@@ -64,6 +64,15 @@ function decorationsForHints(hints: readonly InsertValueHint[]): DecorationSet {
 }
 
 /** @internal Exported for unit tests. */
+/**
+ * Whether a database type runs SQL-family statements, where INSERT column
+ * hints (and their SELECT extension) apply. NoSQL/document stores are excluded;
+ * keep this list in sync instead of re-inlining it at call sites.
+ */
+export function supportsInsertValueHints(databaseType: string | undefined | null): boolean {
+  return databaseType !== "redis" && databaseType !== "mongodb" && databaseType !== "elasticsearch" && databaseType !== "easysearch" && databaseType !== "meilisearch" && databaseType !== "victoriametrics";
+}
+
 export function buildInsertValueHintDecorations(hints: readonly InsertValueHint[]): DecorationSet {
   return decorationsForHints(hints);
 }
