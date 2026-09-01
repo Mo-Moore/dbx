@@ -724,8 +724,6 @@ const queryEditorAppearanceSettings = computed(() => {
     wordWrap: settings.wordWrap,
     vimModeEnabled: settings.vimModeEnabled,
     autoCloseBrackets: settings.autoCloseBrackets,
-    showCurrentStatementFrame: settings.showCurrentStatementFrame,
-    showInsertValueHints: settings.showInsertValueHints,
     showLineNumbers: settings.showLineNumbers,
     shortcuts: settings.shortcuts,
     showStatementRunButtons: settings.showStatementRunButtons,
