@@ -612,8 +612,8 @@ func TestGetObjectSourceRoutesFunctionsToSystemFunctionsView(t *testing.T) {
 }
 
 func TestListRoutinesUsesDatabaseParameterWhenSchemaEmpty(t *testing.T) {
-	proceduresQuery := "SELECT procedure_name FROM system.procedures_v WHERE lower(database_name) = lower('ods') AND lower(procedure_name) LIKE '%' ORDER BY procedure_name"
-	defaultQuery := "SELECT procedure_name FROM system.procedures_v WHERE lower(database_name) = lower('default') AND lower(procedure_name) LIKE '%' ORDER BY procedure_name"
+	proceduresQuery := "SELECT procedure_name FROM system.procedures_v WHERE lower(database_name) = lower('ods') AND lower(procedure_name) LIKE '%%' ORDER BY procedure_name"
+	defaultQuery := "SELECT procedure_name FROM system.procedures_v WHERE lower(database_name) = lower('default') AND lower(procedure_name) LIKE '%%' ORDER BY procedure_name"
 	behavior := &scriptedBehavior{
 		query: func(_ context.Context, query string) (driver.Rows, error) {
 			switch query {
