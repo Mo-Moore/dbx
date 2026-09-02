@@ -644,6 +644,36 @@ func TestListRoutinesUsesDatabaseParameterWhenSchemaEmpty(t *testing.T) {
 	}
 }
 
+func TestListRoutinesDoesNotFallbackToConnectionDefaultForExplicitSchema(t *testing.T) {
+	defaultQuery := "SELECT procedure_name FROM system.procedures_v WHERE lower(database_name) = lower('default') AND lower(procedure_name) LIKE '%%' ORDER BY procedure_name"
+	behavior := &scriptedBehavior{
+		query: func(_ context.Context, query string) (driver.Rows, error) {
+			if query == defaultQuery {
+				// Serving this row proves the driver fell back to the
+				// connection default after the explicit schema came back empty.
+				return newScriptedRows(context.Background(), []string{"procedure_name"}, []string{"STRING"}, [][]driver.Value{
+					{"sp_should_not_leak"},
+				}), nil
+			}
+			return newScriptedRows(context.Background(), []string{"procedure_name"}, []string{"STRING"}, [][]driver.Value{}), nil
+		},
+	}
+	server := newScriptedServer(t, behavior)
+	server.params.DatabaseType = "argo"
+	server.config.Database = "default"
+	defer server.disconnect()
+
+	values, err := server.listObjects("", "ods", metadataListConstraints{
+		ObjectTypes: []string{"PROCEDURE"},
+	})
+	if err != nil {
+		t.Fatalf("listObjects: %v", err)
+	}
+	if len(values) != 0 {
+		t.Fatalf("expected no routines to leak from the connection default database, got %+v", values)
+	}
+}
+
 func TestGetObjectSourceUsesDatabaseParameterForRoutineSource(t *testing.T) {
 	expectedSQL := "SELECT full_text FROM system.procedures_v WHERE lower(database_name) = lower('ods') AND procedure_name = 'sp_daily_etl'"
 	behavior := &scriptedBehavior{

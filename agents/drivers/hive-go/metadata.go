@@ -488,7 +488,10 @@ func (server *server) supportsRoutines() bool {
 // routineDatabaseCandidates returns the database_name filters to try against
 // system.procedures_v / system.functions_v. The sidebar may pass the active
 // database through either the schema or database RPC parameter, so mirror the
-// JDBC plugin and try both before falling back to the connection default.
+// JDBC plugin and try both. The connection default is only a candidate when
+// the caller supplied neither parameter: appending it unconditionally would
+// return the default database's routines under an explicit database node that
+// has none of its own.
 func routineDatabaseCandidates(schema, database, connectionDatabase string) []string {
 	seen := map[string]bool{}
 	values := make([]string, 0, 3)
@@ -506,7 +509,9 @@ func routineDatabaseCandidates(schema, database, connectionDatabase string) []st
 	}
 	add(database)
 	add(schema)
-	add(connectionDatabase)
+	if strings.TrimSpace(database) == "" && strings.TrimSpace(schema) == "" {
+		add(connectionDatabase)
+	}
 	return values
 }
 
