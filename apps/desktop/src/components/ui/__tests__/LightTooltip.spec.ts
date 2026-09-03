@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { createApp, defineComponent, h, nextTick } from "vue";
+import { createApp, defineComponent, h, nextTick, ref } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import LightTooltip from "@/components/ui/LightTooltip.vue";
 
@@ -44,6 +44,42 @@ describe("LightTooltip scrolling", () => {
     expect(document.querySelector("#tooltip-content")).toBeTruthy();
 
     document.dispatchEvent(new Event("scroll"));
+    await nextTick();
+    expect(document.querySelector("#tooltip-content")).toBeNull();
+
+    app.unmount();
+  });
+
+  it("closes when disabled becomes true while open", async () => {
+    vi.useFakeTimers();
+    const disabled = ref(false);
+    const root = defineComponent({
+      setup() {
+        return () =>
+          h(
+            LightTooltip,
+            { text: "", delay: 0, disabled: disabled.value },
+            {
+              default: () => h("span", { id: "tooltip-trigger" }, "Tab"),
+              content: () => h("div", { id: "tooltip-content" }, "Details"),
+            },
+          );
+      },
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const app = createApp(root);
+    app.mount(container);
+
+    const trigger = container.querySelector<HTMLElement>("#tooltip-trigger");
+    expect(trigger).toBeTruthy();
+    vi.spyOn(trigger!, "matches").mockImplementation((selector) => selector === ":hover");
+    trigger?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    await vi.runAllTimersAsync();
+    await nextTick();
+    expect(document.querySelector("#tooltip-content")).toBeTruthy();
+
+    disabled.value = true;
     await nextTick();
     expect(document.querySelector("#tooltip-content")).toBeNull();
 

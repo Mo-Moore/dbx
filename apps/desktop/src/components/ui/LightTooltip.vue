@@ -259,9 +259,9 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => [props.disabled, props.text] as const,
+  () => [isDisabled(), hasContent.value] as const,
   () => {
-    if (isDisabled() || !props.text) close();
+    if (isDisabled() || !hasContent.value) close();
     else if (show.value) {
       updatePosition();
       void nextTick(fitPositionToViewport);
