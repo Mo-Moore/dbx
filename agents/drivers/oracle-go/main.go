@@ -3406,20 +3406,47 @@ func (s *server) appendViewCommentDDLs(schema, name, viewDDL string) string {
 		return viewDDL
 	}
 	var builder strings.Builder
-	baseDDL := strings.TrimSpace(viewDDL)
-	builder.WriteString(baseDDL)
-	dependentAppended := false
+	builder.WriteString(terminateOracleViewDDL(strings.TrimSpace(viewDDL)))
 	for _, comment := range comments {
-		if strings.TrimSpace(comment) == "" {
-			continue
-		}
-		if !dependentAppended && !strings.HasSuffix(baseDDL, ";") && !strings.HasSuffix(baseDDL, "/") {
-			builder.WriteByte(';')
-		}
 		appendOracleDDLFragment(&builder, comment)
-		dependentAppended = true
 	}
 	return builder.String()
+}
+
+func terminateOracleViewDDL(ddl string) string {
+	var lastCode byte
+	trailingLineComment := false
+	for pos := 0; pos < len(ddl); pos++ {
+		if isSQLWhitespace(ddl[pos]) {
+			continue
+		}
+		if ddl[pos] == '-' && pos+1 < len(ddl) && ddl[pos+1] == '-' {
+			pos = skipLineCommentSQL(ddl, pos)
+			trailingLineComment = true
+			continue
+		}
+		if ddl[pos] == '/' && pos+1 < len(ddl) && ddl[pos+1] == '*' {
+			pos = skipBlockCommentSQL(ddl, pos)
+			trailingLineComment = false
+			continue
+		}
+		if end, ok := skipOracleAlternativeQuotedSQL(ddl, pos); ok {
+			pos = end
+		} else if ddl[pos] == '\'' {
+			pos = skipSingleQuotedSQL(ddl, pos)
+		} else if ddl[pos] == '"' {
+			pos = skipDoubleQuotedSQL(ddl, pos)
+		}
+		lastCode = ddl[pos]
+		trailingLineComment = false
+	}
+	if lastCode == ';' || lastCode == '/' {
+		return ddl
+	}
+	if trailingLineComment {
+		return ddl + "\n;"
+	}
+	return ddl + ";"
 }
 
 func (s *server) getViewSource(schema, name string) (string, error) {

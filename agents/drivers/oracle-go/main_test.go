@@ -676,6 +676,99 @@ func TestBuildViewDDLAppendsComments(t *testing.T) {
 	}
 }
 
+func TestBuildViewDDLCommentBoundaries(t *testing.T) {
+	const query = `SELECT 1 AS "ID" FROM DUAL`
+	for _, test := range []struct {
+		name             string
+		source           string
+		terminated       string
+		noComments       bool
+		tableError       bool
+		columnError      bool
+		columnOnly       bool
+		tableOnly        bool
+		metadataFallback bool
+	}{
+		{name: "plain", source: query, terminated: query + ";"},
+		{name: "line comment", source: query + " -- trailing", terminated: query + " -- trailing\n;"},
+		{name: "semicolon in comment", source: query + " -- trailing;", terminated: query + " -- trailing;\n;"},
+		{name: "slash in comment", source: query + " -- trailing /", terminated: query + " -- trailing /\n;"},
+		{name: "existing terminator", source: query + ";", terminated: query + ";"},
+		{name: "slash delimiter", source: query + "\n/", terminated: query + "\n/"},
+		{name: "terminated before line comment", source: query + "; -- trailing;", terminated: query + "; -- trailing;"},
+		{name: "terminated before block comment", source: query + "; /* trailing; */", terminated: query + "; /* trailing; */"},
+		{name: "block comment", source: query + " /* trailing; */", terminated: query + " /* trailing; */;"},
+		{name: "quoted comment markers", source: `SELECT '--;', q'[owner's --;]' AS "--ID" FROM DUAL -- tail`, terminated: `SELECT '--;', q'[owner's --;]' AS "--ID" FROM DUAL -- tail` + "\n;"},
+		{name: "full create", source: `CREATE VIEW "HR"."ACTIVE_ORDERS" AS ` + query + " -- tail", terminated: `CREATE VIEW "HR"."ACTIVE_ORDERS" AS ` + query + " -- tail\n;"},
+		{name: "metadata fallback", source: `CREATE VIEW "HR"."ACTIVE_ORDERS" AS ` + query + " -- tail;", terminated: `CREATE VIEW "HR"."ACTIVE_ORDERS" AS ` + query + " -- tail;\n;", metadataFallback: true},
+		{name: "column only", source: query + " -- tail;", terminated: query + " -- tail;\n;", columnOnly: true},
+		{name: "table only", source: query + " -- tail;", terminated: query + " -- tail;\n;", tableOnly: true},
+		{name: "no comments", source: query, noComments: true},
+		{name: "no comments with trailing comment", source: query + " -- tail;\n", noComments: true},
+		{name: "table lookup failure", source: query + " -- tail", tableError: true},
+		{name: "column lookup failure", source: query + " -- tail", columnError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tableStep := oracleViewSourceQueryStep{queryContains: "FROM ALL_TAB_COMMENTS", args: []driver.Value{"HR", "ACTIVE_ORDERS"}}
+			columnStep := oracleViewSourceQueryStep{queryContains: "FROM ALL_COL_COMMENTS", args: []driver.Value{"HR", "ACTIVE_ORDERS"}, columns: []string{"COLUMN_NAME", "COMMENTS"}}
+			if !test.noComments {
+				if !test.columnOnly {
+					tableStep.rows = [][]driver.Value{{"View's comment"}}
+				}
+				if !test.tableOnly {
+					columnStep.rows = [][]driver.Value{{"ID", "Column's comment"}}
+				}
+			}
+			if test.tableError {
+				tableStep.err = errors.New("dictionary denied")
+			}
+			if test.columnError {
+				columnStep.err = errors.New("dictionary denied")
+			}
+			steps := []oracleViewSourceQueryStep{
+				{queryContains: "FROM ALL_VIEWS", args: []driver.Value{"HR", "ACTIVE_ORDERS"}, rows: [][]driver.Value{{test.source}}},
+			}
+			if test.metadataFallback {
+				steps[0].err = errors.New("view text unavailable")
+				steps = append(steps, oracleViewSourceQueryStep{
+					queryContains: "DBMS_METADATA.GET_DDL('VIEW'", args: []driver.Value{"ACTIVE_ORDERS", "HR"}, rows: [][]driver.Value{{test.source}},
+				})
+			}
+			steps = append(steps, tableStep)
+			if !test.tableError {
+				steps = append(steps, columnStep)
+			}
+			database, scripted := openOracleViewSourceTestDB(t, steps)
+			server := newServer()
+			server.db = database
+			got, err := server.buildViewDDL("HR", "ACTIVE_ORDERS")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := test.terminated
+			if test.noComments || test.tableError || test.columnError {
+				want = strings.TrimSpace(test.source)
+			} else {
+				if !test.columnOnly {
+					want += "\n\nCOMMENT ON TABLE \"HR\".\"ACTIVE_ORDERS\" IS 'View''s comment';"
+				}
+				if !test.tableOnly {
+					want += "\n\nCOMMENT ON COLUMN \"HR\".\"ACTIVE_ORDERS\".\"ID\" IS 'Column''s comment';"
+				}
+			}
+			if !strings.HasPrefix(want, "CREATE ") {
+				want = "CREATE OR REPLACE VIEW \"HR\".\"ACTIVE_ORDERS\" AS\n" + want
+			}
+			if got != want {
+				t.Fatalf("buildViewDDL() = %q, want %q", got, want)
+			}
+			if scripted.next != len(scripted.steps) {
+				t.Fatalf("expected %d queries, got %d", len(scripted.steps), scripted.next)
+			}
+		})
+	}
+}
+
 func TestGetTableDDLForViewAppendsComments(t *testing.T) {
 	const schema = "HR"
 	const view = "ACTIVE_ORDERS"
