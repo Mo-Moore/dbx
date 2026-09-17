@@ -52,7 +52,13 @@ export function buildSelectStarWithLimitSql(table: string, limit: number, databa
   }
 }
 
-/** Snippet bodies keep a trailing semicolon for insert-at-cursor UX. */
+/**
+ * Snippet bodies keep a trailing semicolon for insert-at-cursor UX.
+ * An unknown JDBC driver may expose any SQL dialect, so the snippet stays
+ * unbounded instead of guessing LIMIT; quick actions remain bounded via
+ * `buildSelectStarWithLimitSql` regardless.
+ */
 export function buildSelectSnippetBody(databaseType?: DatabaseType, limit = DEFAULT_SELECT_ROW_LIMIT): string {
+  if (databaseType === "jdbc") return "SELECT *\nFROM table;";
   return `${buildSelectStarWithLimitSql("table", limit, databaseType)};`;
 }

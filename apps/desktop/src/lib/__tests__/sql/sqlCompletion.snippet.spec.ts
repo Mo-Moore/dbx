@@ -84,7 +84,7 @@ describe("buildSnippetItems", () => {
     ["teradata", "SELECT TOP 100 *\nFROM table;", "SELECT TOP 100 *\nFROM ${table};"],
     ["informix", "SELECT FIRST 100 *\nFROM table;", "SELECT FIRST 100 *\nFROM ${table};"],
     ["firebird", "SELECT *\nFROM table\nROWS 100;", "SELECT *\nFROM ${table}\nROWS 100;"],
-    ["jdbc", "SELECT *\nFROM table\nLIMIT 100;", "SELECT *\nFROM ${table}\nLIMIT 100;"],
+    ["jdbc", "SELECT *\nFROM table;", "SELECT *\nFROM ${table};"],
   ] as const)("uses the %s row limit syntax in the built-in select snippet", (databaseType, detail, apply) => {
     const items = buildSnippetItemsForTest("sel", [BUILTIN_SELECT], undefined, databaseType);
 

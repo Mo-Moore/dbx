@@ -1717,12 +1717,6 @@ watch(
   (open) => {
     if (open) {
       syncEditorSettingsDraftFromStore();
-      const storeShortcutIds = new Set(settingsStore.editorSettings.sqlShortcuts.map((action) => action.id));
-      if (DEFAULT_SQL_SHORTCUTS.some((action) => !storeShortcutIds.has(action.id))) {
-        const mergedShortcuts = mergeDefaultSqlShortcuts(settingsStore.editorSettings.sqlShortcuts);
-        editSqlShortcuts.value = mergedShortcuts.map(editableSqlShortcut);
-        void settingsStore.updateEditorSettingsAndPersist({ sqlShortcuts: mergedShortcuts });
-      }
       editShowTrayIcon.value = settingsStore.desktopSettings.show_tray_icon;
       editQuitOnClose.value = settingsStore.desktopSettings.quit_on_close;
       editIconTheme.value = settingsStore.desktopSettings.icon_theme;

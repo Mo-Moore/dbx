@@ -105,6 +105,11 @@ describe("buildSqlShortcutExecutionSql", () => {
     expect(buildSqlShortcutExecutionSql(selectLimit, "orders", "oracle")).toBe("SELECT *\nFROM orders\nWHERE ROWNUM <= 10");
   });
 
+  it("keeps quick actions bounded for unknown jdbc dialects", () => {
+    const selectLimit = action("top10", "Mod+Shift+1", { kind: "select-limit", limit: 10 });
+    expect(buildSqlShortcutExecutionSql(selectLimit, "orders", "jdbc")).toBe("SELECT *\nFROM orders\nLIMIT 10");
+  });
+
   it("keeps plain templates unchanged aside from ${table}", () => {
     expect(buildSqlShortcutExecutionSql(action("count", "Mod+C", { sql: "SELECT COUNT(*) FROM ${table}" }), "t")).toBe("SELECT COUNT(*) FROM t");
   });
