@@ -3389,10 +3389,37 @@ func (s *server) buildViewDDL(schema, name string) (string, error) {
 	}
 	trimmed := strings.TrimSpace(source)
 	upperSource := strings.ToUpper(trimmed)
+	var ddl string
 	if strings.HasPrefix(upperSource, "CREATE ") || strings.HasPrefix(upperSource, "ALTER ") {
-		return trimmed, nil
+		ddl = trimmed
+	} else {
+		ddl = fmt.Sprintf("CREATE OR REPLACE VIEW %s.%s AS\n%s", quoteIdentifier(schema), quoteIdentifier(name), trimmed)
 	}
-	return fmt.Sprintf("CREATE OR REPLACE VIEW %s.%s AS\n%s", quoteIdentifier(schema), quoteIdentifier(name), trimmed), nil
+	return s.appendViewCommentDDLs(schema, name, ddl), nil
+}
+
+// appendViewCommentDDLs appends COMMENT ON TABLE/COLUMN statements for views.
+// Oracle stores view comments in ALL_TAB_COMMENTS / ALL_COL_COMMENTS the same way as tables.
+func (s *server) appendViewCommentDDLs(schema, name, viewDDL string) string {
+	comments, err := s.loadTableCommentDDLs(schema, name)
+	if err != nil || len(comments) == 0 {
+		return viewDDL
+	}
+	var builder strings.Builder
+	baseDDL := strings.TrimSpace(viewDDL)
+	builder.WriteString(baseDDL)
+	dependentAppended := false
+	for _, comment := range comments {
+		if strings.TrimSpace(comment) == "" {
+			continue
+		}
+		if !dependentAppended && !strings.HasSuffix(baseDDL, ";") && !strings.HasSuffix(baseDDL, "/") {
+			builder.WriteByte(';')
+		}
+		appendOracleDDLFragment(&builder, comment)
+		dependentAppended = true
+	}
+	return builder.String()
 }
 
 func (s *server) getViewSource(schema, name string) (string, error) {

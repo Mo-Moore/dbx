@@ -3180,12 +3180,12 @@ mod tests {
         presto_like_columns_from_query_result, presto_like_information_schema_columns_sql,
         presto_like_information_schema_tables_sql, presto_like_tables_from_query_result,
         reference_key_columns_from_indexes, reference_keys_from_indexes, replace_metadata_runtime,
-        should_query_oracle_columns_via_sql_first, table_comments_from_query_result, table_name_filter_matches,
-        tdengine_table_comment_like_pattern, tdengine_table_comment_sql, tdengine_table_comments_sql,
-        uses_mongodb_agent_collection_listing, visible_schema_filter, ExternalDriverStatisticsDialect,
-        MetadataErrorAction, MysqlTableListSource, OracleObjectRef, OracleSynonymResolver, ReferenceKeyInfo,
-        TableNameFilter, ORACLE_CURRENT_SCHEMA_SQL, ORACLE_SYNONYM_MAX_DEPTH, TDENGINE_COMMENT_SEARCH_TIMEOUT,
-        TDENGINE_LIKE_PATTERN_MAX_BYTES,
+        should_append_oracle_style_comment_ddl, should_query_oracle_columns_via_sql_first,
+        table_comments_from_query_result, table_name_filter_matches, tdengine_table_comment_like_pattern,
+        tdengine_table_comment_sql, tdengine_table_comments_sql, uses_mongodb_agent_collection_listing,
+        visible_schema_filter, ExternalDriverStatisticsDialect, MetadataErrorAction, MysqlTableListSource,
+        OracleObjectRef, OracleSynonymResolver, ReferenceKeyInfo, TableNameFilter, ORACLE_CURRENT_SCHEMA_SQL,
+        ORACLE_SYNONYM_MAX_DEPTH, TDENGINE_COMMENT_SEARCH_TIMEOUT, TDENGINE_LIKE_PATTERN_MAX_BYTES,
     };
     use super::{list_databases_core, list_tables_core};
     use super::{
@@ -3707,6 +3707,19 @@ done
 
         config.db_type = DatabaseType::Oracle;
         assert!(!is_oracle_external_driver_config(&config));
+    }
+
+    #[test]
+    fn should_append_oracle_style_comment_ddl_for_oracle_family() {
+        assert!(should_append_oracle_style_comment_ddl(Some(&test_connection_config(DatabaseType::Oracle))));
+        assert!(should_append_oracle_style_comment_ddl(Some(&test_connection_config(DatabaseType::OceanbaseOracle))));
+        assert!(should_append_oracle_style_comment_ddl(Some(&test_connection_config(DatabaseType::Dameng))));
+        assert!(!should_append_oracle_style_comment_ddl(Some(&test_connection_config(DatabaseType::Mysql))));
+        assert!(!should_append_oracle_style_comment_ddl(None));
+
+        let mut jdbc_oracle = test_connection_config(DatabaseType::Jdbc);
+        jdbc_oracle.connection_string = Some("jdbc:oracle:thin:@localhost:1521/ORCL".to_string());
+        assert!(should_append_oracle_style_comment_ddl(Some(&jdbc_oracle)));
     }
 
     #[test]
@@ -8092,18 +8105,25 @@ async fn get_table_ddl_core_with_options(
             None,
         )
         .await?;
-        let database_type = connection_config(state, connection_id).await.map(|config| config.db_type);
+        let db_config = connection_config(state, connection_id).await;
+        let database_type = db_config.as_ref().map(|config| config.db_type);
         // Kingbase MySQL compatibility mode reports a backtick identifier
         // quote; thread it through so the view DDL wraps hyphenated schema
         // names in backticks instead of double quotes the server rejects.
         let identifier_quote = state.connection_identifier_quote(connection_id, Some(database)).await.ok().flatten();
-        return Ok(crate::object_source_sql::build_view_ddl_sql(crate::object_source_sql::BuildViewDdlInput {
+        let ddl = crate::object_source_sql::build_view_ddl_sql(crate::object_source_sql::BuildViewDdlInput {
             database_type,
             schema: if schema.trim().is_empty() { None } else { Some(schema.to_string()) },
             name: table.to_string(),
             source: source.source,
             identifier_quote,
-        }));
+        });
+        // Oracle-family comments live in dictionary tables, not inside CREATE VIEW.
+        // Append COMMENT ON so table-properties DDL / hover match the structure editor.
+        if should_append_oracle_style_comment_ddl(db_config.as_ref()) {
+            return Ok(enrich_ddl_with_oracle_style_comments(state, connection_id, database, schema, table, &ddl).await);
+        }
+        return Ok(ddl);
     }
     if matches!(object_type, Some(db::ObjectSourceKind::MaterializedView)) {
         let source = get_object_source_core(
@@ -9812,6 +9832,107 @@ fn append_oracle_comments_to_ddl(
     result
 }
 
+fn should_append_oracle_style_comment_ddl(config: Option<&ConnectionConfig>) -> bool {
+    config.is_some_and(|config| {
+        matches!(config.db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle | DatabaseType::Dameng)
+            || is_oracle_external_driver_config(config)
+    })
+}
+
+/// Enrich display DDL with dictionary comments for Oracle-family engines.
+/// Failures are logged and the original DDL is returned unchanged.
+async fn enrich_ddl_with_oracle_style_comments(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    schema: &str,
+    table: &str,
+    ddl: &str,
+) -> String {
+    let columns = match get_columns_core(state, connection_id, database, schema, table).await {
+        Ok(columns) => columns,
+        Err(error) => {
+            log::debug!(
+                "[schema][oracle:display-ddl:columns-for-comments-failed] connection_id={} schema={} table={} error={}",
+                connection_id,
+                schema,
+                table,
+                error
+            );
+            Vec::new()
+        }
+    };
+    let table_comment = match get_table_comment_core(state, connection_id, database, schema, table).await {
+        Ok(comment) => comment,
+        Err(error) => {
+            log::debug!(
+                "[schema][oracle:display-ddl:table-comment-failed] connection_id={} schema={} table={} error={}",
+                connection_id,
+                schema,
+                table,
+                error
+            );
+            match try_load_oracle_table_comment_from_external_driver(state, connection_id, database, schema, table)
+                .await
+            {
+                Ok(comment) => comment,
+                Err(fallback_error) => {
+                    log::debug!(
+                        "[schema][oracle:display-ddl:table-comment-fallback-failed] connection_id={} schema={} table={} error={}",
+                        connection_id,
+                        schema,
+                        table,
+                        fallback_error
+                    );
+                    None
+                }
+            }
+        }
+    };
+    append_oracle_comments_to_ddl(ddl, schema, table, table_comment.as_deref(), &columns)
+}
+
+async fn try_load_oracle_table_comment_from_external_driver(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    schema: &str,
+    table: &str,
+) -> Result<Option<String>, String> {
+    let pool_key = state.get_or_create_metadata_pool_for_session(connection_id, Some(database), None).await?;
+    let pool_handle = state.pool_handle(&pool_key).await;
+    let Some(PoolKind::ExternalDriver { config, session, .. }) = pool_handle.as_ref() else {
+        return Ok(None);
+    };
+    if !is_oracle_external_driver_config(config.as_ref()) {
+        return Ok(None);
+    }
+    external_driver_oracle_table_comment(session.clone(), config.as_ref(), database, schema, table).await
+}
+
+async fn external_driver_oracle_table_comment(
+    session: std::sync::Arc<crate::plugins::PluginDriverSession>,
+    config: &ConnectionConfig,
+    database: &str,
+    schema: &str,
+    table: &str,
+) -> Result<Option<String>, String> {
+    let result: db::QueryResult = session
+        .invoke_with_timeout(
+            "executeQuery",
+            serde_json::json!({
+                "connection": config,
+                "database": database,
+                "schema": schema,
+                "sql": oracle_table_comment_sql(schema, table),
+                "maxRows": 1
+            }),
+            agent_metadata_timeout(Some(config)),
+        )
+        .await?;
+    oracle_table_comment_from_query_result(result)
+}
+
 async fn db2_agent_table_ddl(
     client: Arc<db::agent_driver::PooledAgentClient>,
     database: &str,
@@ -10448,6 +10569,36 @@ mod object_source_tests {
         assert!(ddl.contains("COMMENT ON TABLE \"HR\".\"USERS\" IS 'User table';"));
         assert!(ddl.contains("COMMENT ON COLUMN \"HR\".\"USERS\".\"DISPLAY\"\"NAME\" IS 'User''s display name';"));
         assert!(!ddl.contains("EMPTY_COMMENT\" IS"));
+    }
+
+    #[test]
+    fn appends_oracle_comments_to_view_ddl() {
+        let column = db::ColumnInfo {
+            name: "STATUS".to_string(),
+            data_type: "VARCHAR2(20)".to_string(),
+            is_nullable: true,
+            column_default: None,
+            is_primary_key: false,
+            extra: None,
+            comment: Some("Order status".to_string()),
+            numeric_precision: None,
+            numeric_scale: None,
+            character_maximum_length: None,
+            enum_values: None,
+            ..Default::default()
+        };
+
+        let ddl = append_oracle_comments_to_ddl(
+            "CREATE OR REPLACE VIEW \"HR\".\"ACTIVE_ORDERS\" AS\nSELECT \"STATUS\" FROM \"HR\".\"ORDERS\"",
+            "HR",
+            "ACTIVE_ORDERS",
+            Some("Open orders view"),
+            &[column],
+        );
+
+        assert!(ddl.contains("CREATE OR REPLACE VIEW \"HR\".\"ACTIVE_ORDERS\" AS"));
+        assert!(ddl.contains("COMMENT ON TABLE \"HR\".\"ACTIVE_ORDERS\" IS 'Open orders view';"));
+        assert!(ddl.contains("COMMENT ON COLUMN \"HR\".\"ACTIVE_ORDERS\".\"STATUS\" IS 'Order status';"));
     }
 
     #[test]
@@ -11672,12 +11823,48 @@ async fn external_driver_oracle_ddl(
             agent_metadata_timeout(Some(config)),
         )
         .await?;
-    result
+    let ddl = result
         .get("source")
         .and_then(serde_json::Value::as_str)
         .filter(|source| !source.trim().is_empty())
         .map(str::to_string)
-        .ok_or_else(|| "JDBC Oracle plugin returned no table DDL".to_string())
+        .ok_or_else(|| "JDBC Oracle plugin returned no table DDL".to_string())?;
+
+    // DBMS_METADATA.GET_DDL omits dictionary comments; append COMMENT ON like the native agent path.
+    let columns = session
+        .invoke_with_timeout::<Vec<db::ColumnInfo>>(
+            "getColumns",
+            serde_json::json!({
+                "connection": config,
+                "database": database,
+                "schema": schema,
+                "table": table,
+            }),
+            agent_metadata_timeout(Some(config)),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            log::debug!(
+                "[schema][jdbc-oracle:get_table_ddl:columns-for-comments-failed] schema={} table={} error={}",
+                schema,
+                table,
+                error
+            );
+            Vec::new()
+        });
+    let table_comment = match external_driver_oracle_table_comment(session, config, database, schema, table).await {
+        Ok(comment) => comment,
+        Err(error) => {
+            log::debug!(
+                "[schema][jdbc-oracle:get_table_ddl:table-comment-failed] schema={} table={} error={}",
+                schema,
+                table,
+                error
+            );
+            None
+        }
+    };
+    Ok(append_oracle_comments_to_ddl(&ddl, schema, table, table_comment.as_deref(), &columns))
 }
 
 /// External JDBC connections that match no vendor DDL dialect (JDBCX wrappers,

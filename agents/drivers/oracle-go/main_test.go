@@ -629,6 +629,96 @@ func TestGetTableDDLAppendsIndexesTriggersAndComments(t *testing.T) {
 	}
 }
 
+func TestBuildViewDDLAppendsComments(t *testing.T) {
+	const schema = "HR"
+	const view = "ACTIVE_ORDERS"
+	const viewText = `SELECT "ID", "STATUS" FROM "HR"."ORDERS" WHERE "STATUS" = 'OPEN'`
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{
+			queryContains: "FROM ALL_VIEWS",
+			args:          []driver.Value{schema, view},
+			rows:          [][]driver.Value{{viewText}},
+		},
+		{
+			queryContains: "FROM ALL_TAB_COMMENTS",
+			args:          []driver.Value{schema, view},
+			rows:          [][]driver.Value{{"Open orders view"}},
+		},
+		{
+			queryContains: "FROM ALL_COL_COMMENTS",
+			args:          []driver.Value{schema, view},
+			columns:       []string{"COLUMN_NAME", "COMMENTS"},
+			rows:          [][]driver.Value{{"STATUS", "Order status"}},
+		},
+	})
+	s := newServer()
+	s.db = db
+
+	got, err := s.buildViewDDL(schema, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{
+		`CREATE OR REPLACE VIEW "HR"."ACTIVE_ORDERS" AS`,
+		viewText,
+		`COMMENT ON TABLE "HR"."ACTIVE_ORDERS" IS 'Open orders view';`,
+		`COMMENT ON COLUMN "HR"."ACTIVE_ORDERS"."STATUS" IS 'Order status';`,
+	} {
+		if !strings.Contains(got, fragment) {
+			t.Fatalf("buildViewDDL() missing %q:\n%s", fragment, got)
+		}
+	}
+	if !strings.Contains(got, viewText+";\n\nCOMMENT ON TABLE") {
+		t.Fatalf("view DDL should be terminated before comment DDL:\n%s", got)
+	}
+	if scripted.next != len(scripted.steps) {
+		t.Fatalf("expected %d queries, got %d", len(scripted.steps), scripted.next)
+	}
+}
+
+func TestGetTableDDLForViewAppendsComments(t *testing.T) {
+	const schema = "HR"
+	const view = "ACTIVE_ORDERS"
+	const viewText = `SELECT 1 AS "ID" FROM DUAL`
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{
+			queryContains: "FROM ALL_VIEWS",
+			args:          []driver.Value{schema, view},
+			rows:          [][]driver.Value{{viewText}},
+		},
+		{
+			queryContains: "FROM ALL_TAB_COMMENTS",
+			args:          []driver.Value{schema, view},
+			rows:          [][]driver.Value{{"Active orders"}},
+		},
+		{
+			queryContains: "FROM ALL_COL_COMMENTS",
+			args:          []driver.Value{schema, view},
+			columns:       []string{"COLUMN_NAME", "COMMENTS"},
+			rows:          [][]driver.Value{{"ID", "Row id"}},
+		},
+	})
+	s := newServer()
+	s.db = db
+
+	got, err := s.getTableDDL(schema, view, "VIEW")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `CREATE OR REPLACE VIEW "HR"."ACTIVE_ORDERS" AS`) {
+		t.Fatalf("expected view create DDL, got:\n%s", got)
+	}
+	if !strings.Contains(got, `COMMENT ON TABLE "HR"."ACTIVE_ORDERS" IS 'Active orders';`) {
+		t.Fatalf("expected view table comment, got:\n%s", got)
+	}
+	if !strings.Contains(got, `COMMENT ON COLUMN "HR"."ACTIVE_ORDERS"."ID" IS 'Row id';`) {
+		t.Fatalf("expected view column comment, got:\n%s", got)
+	}
+	if scripted.next != len(scripted.steps) {
+		t.Fatalf("expected %d queries, got %d", len(scripted.steps), scripted.next)
+	}
+}
+
 func TestGetPortableTableDDLDisablesAndRestoresSegmentAttributes(t *testing.T) {
 	const schema = "HR"
 	const table = "ORDERS"
