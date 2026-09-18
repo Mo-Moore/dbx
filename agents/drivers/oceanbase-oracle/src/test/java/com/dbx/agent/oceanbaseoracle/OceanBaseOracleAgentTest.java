@@ -345,54 +345,49 @@ class OceanBaseOracleAgentTest {
             )
         ));
 
-        ObjectSource source = agent.getObjectSource("app", "ACTIVE_USERS", "VIEW");
+        ObjectSource source = agent.getObjectSource("MixedOwner", "MixedView", "VIEW");
 
         Assertions.assertEquals("VIEW", source.getObject_type());
-        Assertions.assertEquals("APP", source.getSchema());
+        Assertions.assertEquals("MixedOwner", source.getSchema());
         Assertions.assertTrue(source.getSource().startsWith("CREATE OR REPLACE VIEW"), source.getSource());
-        Assertions.assertEquals(List.of("VIEW", "ACTIVE_USERS", "APP"), params);
+        Assertions.assertEquals(List.of("VIEW", "MixedView", "MixedOwner"), params);
         Assertions.assertTrue(sql.get(0).contains("DBMS_METADATA.GET_DDL"), sql.get(0));
     }
 
     @Test
-    void foldUnquotedIdentifierUppercasesOracleCompatibleNames() {
-        Assertions.assertEquals("HR", OceanBaseOracleAgent.foldUnquotedIdentifier("hr"));
-        Assertions.assertEquals("EMP", OceanBaseOracleAgent.foldUnquotedIdentifier(" emp "));
-        Assertions.assertEquals("APP", OceanBaseOracleAgent.foldUnquotedIdentifier("APP"));
-        Assertions.assertEquals("", OceanBaseOracleAgent.foldUnquotedIdentifier(""));
-        Assertions.assertEquals("", OceanBaseOracleAgent.foldUnquotedIdentifier(null));
-        Assertions.assertEquals("", OceanBaseOracleAgent.foldUnquotedIdentifier("   "));
-    }
-
-    @Test
-    void setSchemaSQLFoldsUnquotedSchemaNames() {
+    void setSchemaSQLPreservesSelectedSchemaName() {
         OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
-        Assertions.assertEquals("ALTER SESSION SET CURRENT_SCHEMA = \"HR\"", agent.setSchemaSQL("hr"));
+        Assertions.assertEquals("ALTER SESSION SET CURRENT_SCHEMA = \"MixedOwner\"", agent.setSchemaSQL("MixedOwner"));
         Assertions.assertEquals("", agent.setSchemaSQL(""));
         Assertions.assertEquals("", agent.setSchemaSQL(null));
     }
 
     @Test
-    void getColumnsFoldsLowercaseSchemaAndTableNames() {
+    void getColumnsPreservesMetadataIdentifierSpelling() {
         List<String> sql = new ArrayList<>();
         List<String> params = new ArrayList<>();
         OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
-        TestSupport.setPrivateConnection(agent, preparedConnection(sql, params, columnResultSet(
-            new Object[][]{
-                {"ID", "NUMBER", "N", 19, 0, 22, null, null, null, 1}
-            }
-        )));
+        TestSupport.setPrivateConnection(agent, preparedConnection(
+            sql,
+            params,
+            columnResultSet(new Object[][]{{"MIXED_ID", "NUMBER", "N", 19, 0, 22, null, null, null, 1}}),
+            columnResultSet(new Object[][]{{"UPPER_ID", "NUMBER", "N", 19, 0, 22, null, null, null, 1}})
+        ));
 
-        List<ColumnInfo> columns = agent.getColumns("hr", "emp");
+        List<ColumnInfo> mixedColumns = agent.getColumns("MixedOwner", "Mixed");
+        List<ColumnInfo> upperColumns = agent.getColumns("MixedOwner", "MIXED");
 
-        Assertions.assertEquals(1, columns.size());
-        Assertions.assertEquals("ID", columns.get(0).getName());
-        Assertions.assertEquals(List.of("HR", "EMP", "HR", "EMP"), params);
+        Assertions.assertEquals(List.of("MIXED_ID"), mixedColumns.stream().map(ColumnInfo::getName).toList());
+        Assertions.assertEquals(List.of("UPPER_ID"), upperColumns.stream().map(ColumnInfo::getName).toList());
+        Assertions.assertEquals(
+            List.of("MixedOwner", "Mixed", "MixedOwner", "Mixed", "MixedOwner", "MIXED", "MixedOwner", "MIXED"),
+            params
+        );
         Assertions.assertTrue(sql.get(0).contains("FROM ALL_TAB_COLUMNS"), sql.get(0));
     }
 
     @Test
-    void getObjectSourceFoldsLowercaseObjectNames() {
+    void getObjectSourcePreservesMetadataIdentifierSpelling() {
         List<String> sql = new ArrayList<>();
         List<String> params = new ArrayList<>();
         OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
@@ -405,21 +400,21 @@ class OceanBaseOracleAgentTest {
             )
         ));
 
-        ObjectSource source = agent.getObjectSource("app", "active_users", "VIEW");
+        ObjectSource source = agent.getObjectSource("MixedOwner", "MixedView", "VIEW");
 
-        Assertions.assertEquals("ACTIVE_USERS", source.getName());
-        Assertions.assertEquals("APP", source.getSchema());
-        Assertions.assertEquals(List.of("VIEW", "ACTIVE_USERS", "APP"), params);
+        Assertions.assertEquals("MixedView", source.getName());
+        Assertions.assertEquals("MixedOwner", source.getSchema());
+        Assertions.assertEquals(List.of("VIEW", "MixedView", "MixedOwner"), params);
     }
 
     @Test
-    void getTableDdlFoldsLowercaseSchemaAndTableNames() {
+    void getTableDdlPreservesMetadataIdentifierSpelling() {
         List<String> params = new ArrayList<>();
         OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
         TestSupport.setPrivateConnection(agent, preparedConnection(new ArrayList<>(), params,
             resultSet(
                 new String[]{"DDL"},
-                new Object[][]{{"CREATE TABLE \"USERS\" (\"ID\" NUMBER)"}}
+                new Object[][]{{"CREATE TABLE \"Mixed\" (\"ID\" NUMBER)"}}
             ),
             resultSet(new String[]{"INDEX_NAME"}, new Object[][]{}),
             resultSet(new String[]{"COMMENTS"}, new Object[][]{{null}}),
@@ -427,12 +422,12 @@ class OceanBaseOracleAgentTest {
             resultSet(new String[]{"GRANTEE", "PRIVILEGE", "GRANTABLE"}, new Object[][]{})
         ));
 
-        String ddl = agent.getTableDdl("app", "users");
+        String ddl = agent.getTableDdl("MixedOwner", "Mixed");
 
         Assertions.assertTrue(ddl.contains("CREATE TABLE"), ddl);
         Assertions.assertEquals("TABLE", params.get(0));
-        Assertions.assertEquals("USERS", params.get(1));
-        Assertions.assertEquals("APP", params.get(2));
+        Assertions.assertEquals("Mixed", params.get(1));
+        Assertions.assertEquals("MixedOwner", params.get(2));
     }
 
     @Test
@@ -446,10 +441,10 @@ class OceanBaseOracleAgentTest {
             resultSet(new String[]{"TEXT"}, new Object[][]{{"SELECT ID FROM USERS"}})
         ));
 
-        ObjectSource source = agent.getObjectSource("APP", "ACTIVE_USERS", "VIEW");
+        ObjectSource source = agent.getObjectSource("MixedOwner", "MixedView", "VIEW");
 
         Assertions.assertEquals("SELECT ID FROM USERS", source.getSource());
-        Assertions.assertEquals(List.of("VIEW", "ACTIVE_USERS", "APP", "APP", "ACTIVE_USERS"), params);
+        Assertions.assertEquals(List.of("VIEW", "MixedView", "MixedOwner", "MixedOwner", "MixedView"), params);
         Assertions.assertTrue(sql.get(1).contains("ALL_VIEWS"), sql.get(1));
     }
 
@@ -473,11 +468,14 @@ class OceanBaseOracleAgentTest {
                 )
             ));
 
-            ObjectSource source = agent.getObjectSource("APP", "ACCOUNT_API", object[0]);
+            ObjectSource source = agent.getObjectSource("MixedOwner", "MixedRoutine", object[0]);
 
             Assertions.assertEquals(object[0], source.getObject_type());
             Assertions.assertTrue(source.getSource().startsWith("CREATE OR REPLACE " + object[1]), source.getSource());
-            Assertions.assertEquals(object[1], params.get(params.size() - 1));
+            Assertions.assertEquals(
+                List.of(object[0], "MixedRoutine", "MixedOwner", "MixedOwner", "MixedRoutine", object[1]),
+                params
+            );
             Assertions.assertTrue(sql.get(1).contains("ALL_SOURCE"), sql.get(1));
             Assertions.assertTrue(sql.get(1).contains("ORDER BY LINE"), sql.get(1));
         }
@@ -527,7 +525,7 @@ class OceanBaseOracleAgentTest {
         TestSupport.setPrivateConnection(agent, currentSchemaColumnConnection(
             sql,
             params,
-            resultSet(new String[]{"CURRENT_SCHEMA"}, new Object[][]{{"APP"}}),
+            resultSet(new String[]{"CURRENT_SCHEMA"}, new Object[][]{{"MixedOwner"}}),
             columnResultSet(new Object[][]{
                 {"PARAM_VALUE", "VARCHAR2", "Y", null, null, 100, 100, null, null, 0}
             })
@@ -536,7 +534,7 @@ class OceanBaseOracleAgentTest {
         List<ColumnInfo> columns = agent.getColumns("", "TBPARAM");
 
         Assertions.assertEquals(List.of("PARAM_VALUE"), columns.stream().map(ColumnInfo::getName).toList());
-        Assertions.assertEquals(List.of("APP", "TBPARAM", "APP", "TBPARAM"), params);
+        Assertions.assertEquals(List.of("MixedOwner", "TBPARAM", "MixedOwner", "TBPARAM"), params);
         Assertions.assertTrue(sql.get(0).contains("SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')"), sql.get(0));
         Assertions.assertTrue(sql.get(1).contains("FROM ALL_TAB_COLUMNS"), sql.get(1));
     }

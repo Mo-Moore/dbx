@@ -921,11 +921,10 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
 
     @Override
     public String setSchemaSQL(String schema) {
-        String owner = foldUnquotedIdentifier(schema);
-        if (owner.isEmpty()) {
+        if (schema == null || schema.isBlank()) {
             return "";
         }
-        return "ALTER SESSION SET CURRENT_SCHEMA = " + JdbcIdentifiers.INSTANCE.doubleQuote(owner);
+        return "ALTER SESSION SET CURRENT_SCHEMA = " + JdbcIdentifiers.INSTANCE.doubleQuote(schema);
     }
 
     private List<String> querySchemas() throws SQLException {
@@ -970,27 +969,15 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         return result;
     }
 
-    /**
-     * Fold unquoted Oracle-compatible identifiers the same way the engine stores them
-     * in dictionary views ({@code ALL_*} / {@code DBMS_METADATA}): uppercase.
-     * Callers that need quoted mixed-case names must pass the already-stored spelling;
-     * the agent wire API has no quote flag, matching oracle-go's default fold.
-     */
-    static String foldUnquotedIdentifier(String value) {
-        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
-    }
-
     private static String normalizeObjectName(String name) {
-        String value = foldUnquotedIdentifier(name);
-        if (value.isEmpty()) {
+        if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("Object name must not be blank");
         }
-        return value;
+        return name;
     }
 
     private String normalizeSchema(String schema) throws SQLException {
-        String value = foldUnquotedIdentifier(schema);
-        return value.isEmpty() ? currentSchema() : value;
+        return schema == null || schema.isBlank() ? currentSchema() : schema;
     }
 
     private String currentSchema() throws SQLException {
@@ -999,7 +986,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             if (rs.next()) {
                 String schema = rs.getString(1);
                 if (schema != null && !schema.isBlank()) {
-                    return foldUnquotedIdentifier(schema);
+                    return schema;
                 }
             }
         }
