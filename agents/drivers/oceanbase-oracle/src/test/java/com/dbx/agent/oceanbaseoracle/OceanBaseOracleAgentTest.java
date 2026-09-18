@@ -348,10 +348,91 @@ class OceanBaseOracleAgentTest {
         ObjectSource source = agent.getObjectSource("app", "ACTIVE_USERS", "VIEW");
 
         Assertions.assertEquals("VIEW", source.getObject_type());
-        Assertions.assertEquals("app", source.getSchema());
+        Assertions.assertEquals("APP", source.getSchema());
         Assertions.assertTrue(source.getSource().startsWith("CREATE OR REPLACE VIEW"), source.getSource());
-        Assertions.assertEquals(List.of("VIEW", "ACTIVE_USERS", "app"), params);
+        Assertions.assertEquals(List.of("VIEW", "ACTIVE_USERS", "APP"), params);
         Assertions.assertTrue(sql.get(0).contains("DBMS_METADATA.GET_DDL"), sql.get(0));
+    }
+
+    @Test
+    void foldUnquotedIdentifierUppercasesOracleCompatibleNames() {
+        Assertions.assertEquals("HR", OceanBaseOracleAgent.foldUnquotedIdentifier("hr"));
+        Assertions.assertEquals("EMP", OceanBaseOracleAgent.foldUnquotedIdentifier(" emp "));
+        Assertions.assertEquals("APP", OceanBaseOracleAgent.foldUnquotedIdentifier("APP"));
+        Assertions.assertEquals("", OceanBaseOracleAgent.foldUnquotedIdentifier(""));
+        Assertions.assertEquals("", OceanBaseOracleAgent.foldUnquotedIdentifier(null));
+        Assertions.assertEquals("", OceanBaseOracleAgent.foldUnquotedIdentifier("   "));
+    }
+
+    @Test
+    void setSchemaSQLFoldsUnquotedSchemaNames() {
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        Assertions.assertEquals("ALTER SESSION SET CURRENT_SCHEMA = \"HR\"", agent.setSchemaSQL("hr"));
+        Assertions.assertEquals("", agent.setSchemaSQL(""));
+        Assertions.assertEquals("", agent.setSchemaSQL(null));
+    }
+
+    @Test
+    void getColumnsFoldsLowercaseSchemaAndTableNames() {
+        List<String> sql = new ArrayList<>();
+        List<String> params = new ArrayList<>();
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, preparedConnection(sql, params, columnResultSet(
+            new Object[][]{
+                {"ID", "NUMBER", "N", 19, 0, 22, null, null, null, 1}
+            }
+        )));
+
+        List<ColumnInfo> columns = agent.getColumns("hr", "emp");
+
+        Assertions.assertEquals(1, columns.size());
+        Assertions.assertEquals("ID", columns.get(0).getName());
+        Assertions.assertEquals(List.of("HR", "EMP", "HR", "EMP"), params);
+        Assertions.assertTrue(sql.get(0).contains("FROM ALL_TAB_COLUMNS"), sql.get(0));
+    }
+
+    @Test
+    void getObjectSourceFoldsLowercaseObjectNames() {
+        List<String> sql = new ArrayList<>();
+        List<String> params = new ArrayList<>();
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, objectSourceConnection(
+            sql,
+            params,
+            resultSet(
+                new String[]{"DDL"},
+                new Object[][]{{"CREATE OR REPLACE VIEW \"APP\".\"ACTIVE_USERS\" AS SELECT ID FROM USERS"}}
+            )
+        ));
+
+        ObjectSource source = agent.getObjectSource("app", "active_users", "VIEW");
+
+        Assertions.assertEquals("ACTIVE_USERS", source.getName());
+        Assertions.assertEquals("APP", source.getSchema());
+        Assertions.assertEquals(List.of("VIEW", "ACTIVE_USERS", "APP"), params);
+    }
+
+    @Test
+    void getTableDdlFoldsLowercaseSchemaAndTableNames() {
+        List<String> params = new ArrayList<>();
+        OceanBaseOracleAgent agent = new OceanBaseOracleAgent();
+        TestSupport.setPrivateConnection(agent, preparedConnection(new ArrayList<>(), params,
+            resultSet(
+                new String[]{"DDL"},
+                new Object[][]{{"CREATE TABLE \"USERS\" (\"ID\" NUMBER)"}}
+            ),
+            resultSet(new String[]{"INDEX_NAME"}, new Object[][]{}),
+            resultSet(new String[]{"COMMENTS"}, new Object[][]{{null}}),
+            resultSet(new String[]{"COLUMN_NAME", "COMMENTS"}, new Object[][]{}),
+            resultSet(new String[]{"GRANTEE", "PRIVILEGE", "GRANTABLE"}, new Object[][]{})
+        ));
+
+        String ddl = agent.getTableDdl("app", "users");
+
+        Assertions.assertTrue(ddl.contains("CREATE TABLE"), ddl);
+        Assertions.assertEquals("TABLE", params.get(0));
+        Assertions.assertEquals("USERS", params.get(1));
+        Assertions.assertEquals("APP", params.get(2));
     }
 
     @Test
@@ -714,6 +795,10 @@ class OceanBaseOracleAgentTest {
     }
 
     private static Connection preparedConnection(List<String> sql, ResultSet... resultSets) {
+        return preparedConnection(sql, null, resultSets);
+    }
+
+    private static Connection preparedConnection(List<String> sql, List<String> params, ResultSet... resultSets) {
         int[] resultSetIndex = {0};
         PreparedStatement statement = proxy(PreparedStatement.class, (method, args) -> {
             if ("executeQuery".equals(method.getName())) {
@@ -721,7 +806,13 @@ class OceanBaseOracleAgentTest {
                 resultSetIndex[0] += 1;
                 return resultSets[current];
             }
-            if ("setString".equals(method.getName()) || "setInt".equals(method.getName()) || "close".equals(method.getName())) {
+            if ("setString".equals(method.getName())) {
+                if (params != null) {
+                    params.add(String.valueOf(args[1]));
+                }
+                return null;
+            }
+            if ("setInt".equals(method.getName()) || "close".equals(method.getName())) {
                 return null;
             }
             return defaultValue(method.getReturnType());
