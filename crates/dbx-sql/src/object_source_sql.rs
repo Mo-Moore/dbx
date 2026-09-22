@@ -691,7 +691,8 @@ fn executable_mysql_routine_statements(input: &EditableObjectSourceSqlInput, sou
 
     let declaration = mysql_routine_declaration(source).filter(|declaration| declaration.kind == input.object_type);
     let create_name = declaration.as_ref().map(|declaration| declaration.name.as_str()).unwrap_or(&input.name);
-    let is_rename = declaration.as_ref().is_some_and(|declaration| routine_name_changed(&declaration.name, &input.name));
+    let is_rename =
+        declaration.as_ref().is_some_and(|declaration| routine_name_changed(&declaration.name, &input.name));
     let mut statements = Vec::with_capacity(6);
 
     // MySQL has no cross-version CREATE OR REPLACE for stored routines. Validate the CREATE
@@ -2061,7 +2062,8 @@ mod tests {
                 ensure_semicolon(&validation_source),
                 format!("DROP PROCEDURE IF EXISTS `app`.`{validation_name}`;"),
                 "DROP PROCEDURE IF EXISTS `app`.`refresh_cache_v2`;".to_string(),
-                "CREATE DEFINER=`root`@`%` PROCEDURE `refresh_cache_v2`(IN mode_name varchar(20)) BEGIN SELECT 1; END;".to_string(),
+                "CREATE DEFINER=`root`@`%` PROCEDURE `refresh_cache_v2`(IN mode_name varchar(20)) BEGIN SELECT 1; END;"
+                    .to_string(),
                 "DROP PROCEDURE IF EXISTS `app`.`refresh_cache`;".to_string(),
             ]
         );
