@@ -34,7 +34,6 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const searchQuery = ref("");
-const panelRootRef = ref<HTMLElement | null>(null);
 
 const panelLeft = ref(0);
 const panelTop = ref(0);
@@ -257,7 +256,6 @@ watch(
 <template>
   <Teleport to="body">
     <div
-      ref="panelRootRef"
       data-structure-peek-panel
       role="dialog"
       aria-modal="false"
