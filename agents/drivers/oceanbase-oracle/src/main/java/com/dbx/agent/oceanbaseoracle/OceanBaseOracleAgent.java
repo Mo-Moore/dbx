@@ -40,8 +40,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -407,32 +409,48 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         int scanLimit = Math.min(1000, Math.max(limit * 3, limit + 1));
         String preferredSchema = preferredCompletionSchema(request);
         CompletionTablesQuery query = buildCompletionTablesQuery(request, preferredSchema, scanLimit + 1);
-        List<CompletionAssistantCandidate> candidates = new ArrayList<>();
+        List<CompletionTableRow> rows = new ArrayList<>();
         try (PreparedStatement stmt = requireConnection().prepareStatement(query.sql)) {
             bindCompletionArgs(stmt, query.args);
             try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next() && candidates.size() <= limit) {
-                    String owner = rs.getString(1);
-                    String name = rs.getString(2);
-                    String objectType = rs.getString(3);
-                    if (name == null || name.isBlank()) {
-                        continue;
-                    }
-                    CompletionAssistantCandidateKind kind = "VIEW".equalsIgnoreCase(objectType)
-                        ? CompletionAssistantCandidateKind.VIEW
-                        : CompletionAssistantCandidateKind.TABLE;
-                    candidates.add(new CompletionAssistantCandidate(
-                        name,
-                        kind,
-                        blankToNull(request.getDatabase()),
-                        owner,
-                        null,
-                        null,
-                        null,
-                        objectType
+                while (rs.next()) {
+                    rows.add(new CompletionTableRow(
+                        rs.getString(1),
+                        rs.getString(2),
+                        rs.getString(3),
+                        rs.getString(4),
+                        rs.getString(5)
                     ));
                 }
             }
+        }
+        Set<CompletionSynonymTarget> validTargets = validCompletionSynonymTargets(
+            rows,
+            completionTableObjectTypes(request.getObject_kinds())
+        );
+        List<CompletionAssistantCandidate> candidates = new ArrayList<>();
+        for (CompletionTableRow row : rows) {
+            if (row.name == null || row.name.isBlank()) {
+                continue;
+            }
+            if ("SYNONYM".equalsIgnoreCase(row.objectType)
+                && (row.targetOwner == null || row.targetName == null
+                    || !validTargets.contains(new CompletionSynonymTarget(row.targetOwner, row.targetName)))) {
+                continue;
+            }
+            CompletionAssistantCandidateKind kind = "VIEW".equalsIgnoreCase(row.objectType)
+                ? CompletionAssistantCandidateKind.VIEW
+                : CompletionAssistantCandidateKind.TABLE;
+            candidates.add(new CompletionAssistantCandidate(
+                row.name,
+                kind,
+                blankToNull(request.getDatabase()),
+                row.owner,
+                null,
+                null,
+                null,
+                row.objectType
+            ));
         }
         boolean incomplete = candidates.size() > limit;
         if (incomplete) {
@@ -629,6 +647,66 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             } else {
                 stmt.setString(i + 1, arg == null ? null : String.valueOf(arg));
             }
+        }
+    }
+
+    private Set<CompletionSynonymTarget> validCompletionSynonymTargets(
+        List<CompletionTableRow> rows,
+        List<String> objectTypes
+    ) throws SQLException {
+        Set<CompletionSynonymTarget> targets = new LinkedHashSet<>();
+        for (CompletionTableRow row : rows) {
+            if ("SYNONYM".equalsIgnoreCase(row.objectType) && row.targetOwner != null && row.targetName != null) {
+                targets.add(new CompletionSynonymTarget(row.targetOwner, row.targetName));
+            }
+        }
+        Set<CompletionSynonymTarget> valid = new HashSet<>();
+        if (targets.isEmpty()) {
+            return valid;
+        }
+        String typeList = String.join(", ", objectTypes);
+        List<CompletionSynonymTarget> ordered = new ArrayList<>(targets);
+        for (int start = 0; start < ordered.size(); start += 100) {
+            List<CompletionSynonymTarget> batch = ordered.subList(start, Math.min(start + 100, ordered.size()));
+            List<Object> args = new ArrayList<>();
+            List<String> predicates = new ArrayList<>();
+            for (CompletionSynonymTarget target : batch) {
+                args.add(target.owner());
+                args.add(target.name());
+                predicates.add("(o.OWNER = ? AND o.OBJECT_NAME = ?)");
+            }
+            String sql = "SELECT DISTINCT o.OWNER, o.OBJECT_NAME"
+                + " FROM ALL_OBJECTS o"
+                + " WHERE o.OBJECT_TYPE IN (" + typeList + ")"
+                + " AND (" + String.join(" OR ", predicates) + ")";
+            try (PreparedStatement stmt = requireConnection().prepareStatement(sql)) {
+                bindCompletionArgs(stmt, args);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        valid.add(new CompletionSynonymTarget(rs.getString(1), rs.getString(2)));
+                    }
+                }
+            }
+        }
+        return valid;
+    }
+
+    record CompletionSynonymTarget(String owner, String name) {
+    }
+
+    static final class CompletionTableRow {
+        final String owner;
+        final String name;
+        final String objectType;
+        final String targetOwner;
+        final String targetName;
+
+        CompletionTableRow(String owner, String name, String objectType, String targetOwner, String targetName) {
+            this.owner = owner;
+            this.name = name;
+            this.objectType = objectType;
+            this.targetOwner = targetOwner;
+            this.targetName = targetName;
         }
     }
 
