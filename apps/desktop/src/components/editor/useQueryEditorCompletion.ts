@@ -1260,7 +1260,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
    * extra package-style queries entirely.
    */
   function usesPackageAwareRoutineCompletion(): boolean {
-    if (isOracleCompletionDatabase(props.databaseType)) return true;
+    if (props.databaseType === "oracle") return true;
     if (props.databaseType !== "opengauss") return false;
     const mode = connectionStore.databaseCompatibilityMode(props.connectionId, props.database)?.trim().toUpperCase();
     return mode === undefined || mode === "A";
