@@ -2,6 +2,12 @@ package com.dbx.agent.oceanbaseoracle;
 
 import com.dbx.agent.ColumnInfo;
 import com.dbx.agent.AgentProtocol;
+import com.dbx.agent.CompletionAssistantCandidate;
+import com.dbx.agent.CompletionAssistantCandidateKind;
+import com.dbx.agent.CompletionAssistantMatchMode;
+import com.dbx.agent.CompletionAssistantObjectKind;
+import com.dbx.agent.CompletionAssistantRequest;
+import com.dbx.agent.CompletionAssistantResponse;
 import com.dbx.agent.ConfiguredJdbcAgent;
 import com.dbx.agent.ConnectParams;
 import com.dbx.agent.DatabaseInfo;
@@ -386,6 +392,254 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             }
             return constraints.withoutPaging().filterObjects(result);
         });
+    }
+
+    @Override
+    public CompletionAssistantResponse completionAssistantSearch(CompletionAssistantRequest request) {
+        if (hasTableLikeCompletionKind(request.getObject_kinds())) {
+            return unchecked(() -> completionAssistantTables(request));
+        }
+        return super.completionAssistantSearch(request);
+    }
+
+    private CompletionAssistantResponse completionAssistantTables(CompletionAssistantRequest request) throws SQLException {
+        int limit = boundedCompletionLimit(request.getMax_results());
+        int scanLimit = Math.min(1000, Math.max(limit * 3, limit + 1));
+        String preferredSchema = preferredCompletionSchema(request);
+        CompletionTablesQuery query = buildCompletionTablesQuery(request, preferredSchema, scanLimit + 1);
+        List<CompletionAssistantCandidate> candidates = new ArrayList<>();
+        try (PreparedStatement stmt = requireConnection().prepareStatement(query.sql)) {
+            bindCompletionArgs(stmt, query.args);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next() && candidates.size() <= limit) {
+                    String owner = rs.getString(1);
+                    String name = rs.getString(2);
+                    String objectType = rs.getString(3);
+                    if (name == null || name.isBlank()) {
+                        continue;
+                    }
+                    CompletionAssistantCandidateKind kind = "VIEW".equalsIgnoreCase(objectType)
+                        ? CompletionAssistantCandidateKind.VIEW
+                        : CompletionAssistantCandidateKind.TABLE;
+                    candidates.add(new CompletionAssistantCandidate(
+                        name,
+                        kind,
+                        blankToNull(request.getDatabase()),
+                        owner,
+                        null,
+                        null,
+                        null,
+                        objectType
+                    ));
+                }
+            }
+        }
+        boolean incomplete = candidates.size() > limit;
+        if (incomplete) {
+            candidates = new ArrayList<>(candidates.subList(0, limit));
+        }
+        return new CompletionAssistantResponse(candidates, incomplete, false);
+    }
+
+    static CompletionTablesQuery buildCompletionTablesQuery(
+        CompletionAssistantRequest request,
+        String preferredSchema,
+        int limit
+    ) {
+        List<String> objectTypes = completionTableObjectTypes(request.getObject_kinds());
+        boolean caseSensitive = request.getCase_sensitive();
+        String pattern = completionLikePattern(request.getMask(), request.getMatch_mode());
+        // OceanBase Oracle matches metadata the same way as listTables: fold the
+        // bind value in Java and compare UPPER(column) LIKE ?. UPPER(?) on binds
+        // is unreliable for fuzzy/lowercase masks in this driver.
+        if (!caseSensitive) {
+            pattern = pattern.toUpperCase(Locale.ROOT);
+        }
+        List<Object> args = new ArrayList<>();
+        String namePredicate = completionNamePredicate("o.OBJECT_NAME", caseSensitive);
+        String synonymNamePredicate = completionNamePredicate("s.SYNONYM_NAME", caseSensitive);
+        args.add(pattern);
+
+        String ownerPredicate = "";
+        String synonymOwnerPredicate = "";
+        String owner = "";
+        if (!request.getGlobal_search()) {
+            owner = firstNonBlank(request.getParent_schema(), request.getSchema(), preferredSchema);
+            if (owner == null) {
+                owner = "";
+            }
+            owner = owner.toUpperCase(Locale.ROOT);
+            args.add(owner);
+            ownerPredicate = " AND UPPER(o.OWNER) = ?";
+        }
+
+        args.add(pattern);
+        if (!owner.isEmpty()) {
+            args.add(owner);
+            synonymOwnerPredicate = " AND UPPER(s.OWNER) = ?";
+        }
+
+        String preferred = preferredSchema == null ? "" : preferredSchema.trim();
+        String preferredFolded = caseSensitive ? preferred : preferred.toUpperCase(Locale.ROOT);
+        String exactMask = request.getMask() == null ? "" : request.getMask().trim();
+        String exactFolded = caseSensitive ? exactMask : exactMask.toUpperCase(Locale.ROOT);
+        args.add(preferredFolded);
+        args.add(exactFolded);
+        args.add(limit);
+
+        String typeList = String.join(", ", objectTypes);
+        String baseSql = """
+            SELECT o.OWNER,
+                   o.OBJECT_NAME,
+                   o.OBJECT_TYPE,
+                   CAST(NULL AS VARCHAR2(128)) AS TARGET_OWNER,
+                   CAST(NULL AS VARCHAR2(128)) AS TARGET_NAME
+              FROM ALL_OBJECTS o
+             WHERE o.OBJECT_TYPE IN (%s)
+               AND %s%s
+            UNION ALL
+            SELECT s.OWNER,
+                   s.SYNONYM_NAME AS OBJECT_NAME,
+                   'SYNONYM' AS OBJECT_TYPE,
+                   s.TABLE_OWNER AS TARGET_OWNER,
+                   s.TABLE_NAME AS TARGET_NAME
+              FROM ALL_SYNONYMS s
+             WHERE s.DB_LINK IS NULL
+               AND %s%s
+            """.formatted(typeList, namePredicate, ownerPredicate, synonymNamePredicate, synonymOwnerPredicate)
+            .stripIndent()
+            .trim();
+
+        String preferredOwnerPredicate = caseSensitive ? "OWNER = ?" : "UPPER(OWNER) = ?";
+        String exactNamePredicate = caseSensitive
+            ? "OBJECT_NAME = ?"
+            : "UPPER(OBJECT_NAME) = ?";
+        String orderedSql = """
+            SELECT OWNER, OBJECT_NAME, OBJECT_TYPE, TARGET_OWNER, TARGET_NAME
+              FROM (
+            %s
+              )
+            ORDER BY CASE
+                       WHEN %s THEN 0
+                       WHEN OWNER = 'PUBLIC' THEN 1
+                       WHEN OWNER IN ('SYS','SYSTEM','SYSMAN','DBSNMP','OUTLN','XDB','MDSYS','CTXSYS','WMSYS') THEN 3
+                       ELSE 2
+                     END,
+                     CASE WHEN %s THEN 0 ELSE 1 END,
+                     CASE OBJECT_TYPE WHEN 'TABLE' THEN 0 WHEN 'VIEW' THEN 1 WHEN 'SYNONYM' THEN 3 ELSE 4 END,
+                     OBJECT_NAME,
+                     OWNER
+            """.formatted(baseSql, preferredOwnerPredicate, exactNamePredicate).stripIndent().trim();
+
+        String sql = """
+            SELECT OWNER, OBJECT_NAME, OBJECT_TYPE, TARGET_OWNER, TARGET_NAME
+              FROM (
+            %s
+              )
+             WHERE ROWNUM <= ?
+            """.formatted(orderedSql).stripIndent().trim();
+
+        return new CompletionTablesQuery(sql, args);
+    }
+
+    private static List<String> completionTableObjectTypes(List<CompletionAssistantObjectKind> kinds) {
+        List<String> objectTypes = new ArrayList<>();
+        boolean any = kinds == null || kinds.isEmpty();
+        if (any || kinds.contains(CompletionAssistantObjectKind.TABLE)) {
+            objectTypes.add("'TABLE'");
+        }
+        if (any || kinds.contains(CompletionAssistantObjectKind.VIEW)) {
+            objectTypes.add("'VIEW'");
+        }
+        if (objectTypes.isEmpty()) {
+            objectTypes.add("'TABLE'");
+            objectTypes.add("'VIEW'");
+        }
+        return objectTypes;
+    }
+
+    private static boolean hasTableLikeCompletionKind(List<CompletionAssistantObjectKind> kinds) {
+        if (kinds == null || kinds.isEmpty()) {
+            return true;
+        }
+        for (CompletionAssistantObjectKind kind : kinds) {
+            if (kind == CompletionAssistantObjectKind.TABLE || kind == CompletionAssistantObjectKind.VIEW) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String preferredCompletionSchema(CompletionAssistantRequest request) throws SQLException {
+        String preferred = firstNonBlank(request.getSchema());
+        if (preferred != null && !preferred.isBlank()) {
+            return preferred;
+        }
+        String current = currentSchema();
+        return current == null ? "" : current;
+    }
+
+    private static String completionLikePattern(String mask, CompletionAssistantMatchMode matchMode) {
+        String escaped = escapeLikePattern(mask == null ? "" : mask.trim());
+        if (matchMode == CompletionAssistantMatchMode.CONTAINS) {
+            return "%" + escaped + "%";
+        }
+        return escaped + "%";
+    }
+
+    private static String escapeLikePattern(String mask) {
+        return mask.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+    }
+
+    private static String completionNamePredicate(String column, boolean caseSensitive) {
+        if (caseSensitive) {
+            return column + " LIKE ? ESCAPE '\\'";
+        }
+        return "UPPER(" + column + ") LIKE ? ESCAPE '\\'";
+    }
+
+    private static int boundedCompletionLimit(Integer requested) {
+        if (requested == null || requested <= 0) {
+            return 100;
+        }
+        return Math.min(requested, 1000);
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    private static void bindCompletionArgs(PreparedStatement stmt, List<Object> args) throws SQLException {
+        for (int i = 0; i < args.size(); i++) {
+            Object arg = args.get(i);
+            if (arg instanceof Integer integer) {
+                stmt.setInt(i + 1, integer);
+            } else {
+                stmt.setString(i + 1, arg == null ? null : String.valueOf(arg));
+            }
+        }
+    }
+
+    static final class CompletionTablesQuery {
+        final String sql;
+        final List<Object> args;
+
+        CompletionTablesQuery(String sql, List<Object> args) {
+            this.sql = sql;
+            this.args = List.copyOf(args);
+        }
     }
 
     private static MetadataSql oceanBaseMetadataSql(
