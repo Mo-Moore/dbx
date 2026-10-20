@@ -6,7 +6,7 @@ import { matchHoverTableCandidates, pickHoverObjectMatch, resolveHoverTableLooku
 import { stabilizeUnfocusedQueryEditorPointerDown } from "@/lib/editor/queryEditorUnfocusedPointer";
 import { usesQueryEditorObjectNavigationModifier } from "@/lib/editor/queryEditorPointerSelection";
 import { queryTableNavigationTargetAtSqlPosition } from "@/lib/sql/queryCursorTableTarget";
-import type { SqlCompletionReferencedTable, SqlCompletionTable } from "@/lib/sql/sqlCompletion";
+import type { SqlCompletionObject, SqlCompletionReferencedTable, SqlCompletionTable } from "@/lib/sql/sqlCompletion";
 import type { Ref, ShallowRef } from "vue";
 import type { QueryEditorProps } from "./queryEditorTypes";
 import type { useConnectionStore } from "@/stores/connectionStore";
@@ -244,7 +244,7 @@ export function useQueryEditorObjectNavigation(options: QueryEditorObjectNavigat
         // 1b. Routine cache — skip for pure relation column lists (INSERT INTO t(...)).
         // Unqualified names honor tableHoverLookupMode (same scope as tables); qualified names stay scoped.
         if (!isRelationColumnList) {
-          const matchNavigationObject = (objects: Parameters<typeof matchSqlObject>[1]) => (identity.parts.length === 1 ? pickHoverObjectMatch(objectNameFilter, objects, props.schema) : matchSqlObject(identifier, objects));
+          const matchNavigationObject = (objects: readonly SqlCompletionObject[]) => (identity.parts.length === 1 ? pickHoverObjectMatch(objectNameFilter, objects, props.schema) : matchSqlObject(identifier, objects));
           const unqualifiedObjectSchema = tableLookup.preferGlobalFirst ? undefined : (tableLookup.schema ?? props.schema);
 
           if (identity.parts.length === 2 && identity.qualifier) {
